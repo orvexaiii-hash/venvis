@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="William">
+  <title>William</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-title">William</div>
+    <div class="header-actions">
+      <button class="btn-mode" id="btnMode" title="Cambiar modo">
+        <span id="modeLabel">Voz</span>
+      </button>
+      <button class="btn-memory" id="btnMemory" title="Ver memoria">
+        Memoria
+      </button>
+    </div>
+  </header>
+
+  <!-- MODO CHAT -->
+  <main class="chat-view" id="chatView">
+    <div class="messages" id="messages"></div>
+    <div class="input-bar">
+      <input
+        type="text"
+        id="chatInput"
+        placeholder="Escribí algo..."
+        autocomplete="off"
+        autocorrect="off"
+      >
+      <button id="btnSend">Enviar</button>
+    </div>
+  </main>
+
+  <!-- MODO VOZ -->
+  <main class="voice-view hidden" id="voiceView">
+    <div class="voice-name">William</div>
+    <div class="voice-status" id="voiceStatus">Listo</div>
+    <button class="push-to-talk" id="btnPTT" aria-label="Mantener para hablar">
+      <div class="ptt-ring"></div>
+    </button>
+    <div class="voice-hint">Mantené presionado para hablar</div>
+    <div class="voice-transcript" id="voiceTranscript"></div>
+  </main>
+
+  <!-- PANEL DE MEMORIA -->
+  <div class="memory-overlay hidden" id="memoryOverlay">
+    <div class="memory-panel">
+      <div class="memory-header">
+        <span>Memoria de William</span>
+        <button id="btnCloseMemory">×</button>
+      </div>
+      <div class="memory-list" id="memoryList">
+        <p class="empty-state">Cargando...</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js')
+    }
+  </script>
+</body>
+</html>
