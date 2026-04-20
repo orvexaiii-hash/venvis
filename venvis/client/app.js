@@ -228,7 +228,7 @@ async function loadMemory() {
       <div class="memory-item-body">
         <div class="memory-item-key">${escapeHtml(item.key)}</div>
         <div class="memory-item-value">${escapeHtml(item.value)}</div>
-        <div class="memory-item-conf">Confianza: ${item.confidence}/10</div>
+        <div class="memory-item-conf">Confianza: ${escapeHtml(String(item.confidence))}/10</div>
       </div>
       <button data-key="${escapeHtml(item.key)}" title="Olvidar">×</button>
     `
