@@ -33,9 +33,9 @@ export async function textToSpeech(text) {
 
   async function runTTS(args) {
     try {
-      await execFileAsync('edge-tts', args)
+      await execFileAsync('python3', ['-m', 'edge_tts', ...args])
     } catch {
-      await execFileAsync('python', ['-m', 'edge_tts', ...args])
+      await execFileAsync('edge-tts', args)
     }
   }
 
