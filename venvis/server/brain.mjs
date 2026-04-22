@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getRecentMessages, getAllMemory, saveMessage, upsertMemory } from './memory.mjs'
 import { searchWeb, formatSearchResults }                              from './search.mjs'
 import { getTodayEvents, getWeekEvents, createEvent, CALENDAR_ENABLED } from './calendar.mjs'
-import { turnOn, turnOff, setColor, sendIRCommand, TUYA_ENABLED }      from './tuya.mjs'
+import { turnOn, turnOff, setColor, sendIRCommand, controlACviaIR, TUYA_ENABLED } from './tuya.mjs'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const MODEL  = 'claude-haiku-4-5-20251001'
@@ -166,9 +166,9 @@ async function executeTool(name, input, socket) {
           if (input.action === 'color') return await setColor(LAMP_ID, input.r ?? 255, input.g ?? 255, input.b ?? 255)
         }
         if (input.device === 'ac') {
-          if (!AC_ID) return 'TUYA_DEVICE_ID_AC no configurado.'
-          if (input.action === 'on')  return await turnOn(AC_ID)
-          if (input.action === 'off') return await turnOff(AC_ID)
+          if (!AC_ID || !IR_ID) return 'TUYA_DEVICE_ID_AC o TUYA_DEVICE_ID_IR no configurado.'
+          if (input.action === 'on')  return await controlACviaIR(IR_ID, AC_ID, true)
+          if (input.action === 'off') return await controlACviaIR(IR_ID, AC_ID, false)
         }
         return 'Acción no reconocida.'
       }
