@@ -5,4 +5,4 @@ python-socketio[client]>=5.10.0
 websocket-client>=1.6.0
 numpy>=1.24.0
 onnxruntime>=1.16.0
-playsound==1.2.2
+edge-tts>=6.1.0

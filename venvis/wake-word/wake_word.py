@@ -4,7 +4,7 @@ import openwakeword
 from openwakeword.model import Model
 import socketio
 import speech_recognition as sr
-import base64
+import asyncio
 import time
 import tempfile
 import os
@@ -18,6 +18,10 @@ WAKE_MODEL  = "hey_jarvis"
 THRESHOLD   = 0.3
 SAMPLE_RATE = 16000
 CHUNK       = 1280   # 80ms @ 16kHz
+
+VOICE       = "es-AR-TomasNeural"
+TTS_RATE    = "-5%"
+TTS_PITCH   = "-2Hz"
 
 STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
 
@@ -37,6 +41,57 @@ oww = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx")
 print("Modelo listo.")
 
 
+# ── AUDIO PLAYBACK ───────────────────────────────────────
+
+def _play_mp3_winmm(path):
+    """Reproduce MP3 usando Windows MCI (sin dependencias externas)."""
+    mci = ctypes.windll.winmm
+    alias = "venvis_mp3"
+    abs_path = os.path.abspath(path).replace("/", "\\")
+    mci.mciSendStringW(f'close {alias}', None, 0, None)
+    err = mci.mciSendStringW(f'open "{abs_path}" type mpegvideo alias {alias}', None, 0, None)
+    if err:
+        raise RuntimeError(f"MCI open error: {err}")
+    mci.mciSendStringW(f'play {alias} wait', None, 0, None)
+    mci.mciSendStringW(f'close {alias}', None, 0, None)
+
+
+def play_beep():
+    try:
+        import winsound
+        winsound.Beep(880, 120)
+    except Exception:
+        pass
+
+
+# ── TTS LOCAL ────────────────────────────────────────────
+
+async def _tts_async(text):
+    import edge_tts
+    clean = text.replace('\n', ' ').strip()[:500]
+    communicate = edge_tts.Communicate(clean, VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+        tmp = f.name
+    await communicate.save(tmp)
+    return tmp
+
+
+def speak(text):
+    """Genera y reproduce TTS localmente usando edge-tts."""
+    tmp = None
+    try:
+        tmp = asyncio.run(_tts_async(text))
+        _play_mp3_winmm(tmp)
+    except Exception as e:
+        print(f"[TTS] Error: {e}")
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+
 # ── SOCKET EVENTS ────────────────────────────────────────
 
 @sio.on("connect")
@@ -53,70 +108,18 @@ def on_chunk(data):
 
 @sio.on("venvis_done")
 def on_done(data):
-    print(f"\nVENVIS: {data.get('text', '')}\n")
+    text = data.get('text', '')
+    print(f"\nVENVIS: {text}\n")
+    threading.Thread(target=speak, args=(text,), daemon=True).start()
     print('Escuchando... (decí "hey jarvis")')
 
 @sio.on("venvis_audio")
 def on_audio(data):
-    threading.Thread(target=_play_audio, args=(data,), daemon=True).start()
+    pass  # TTS se hace localmente ahora
 
 @sio.on("venvis_error")
 def on_error(data):
     print(f"[Error] {data.get('message', '')}")
-
-
-# ── AUDIO PLAYBACK ───────────────────────────────────────
-
-def _play_mp3_winmm(path):
-    """Reproduce MP3 usando Windows MCI directamente (sin dependencias externas)."""
-    mci = ctypes.windll.winmm
-    alias = "venvis_mp3"
-    abs_path = os.path.abspath(path).replace("/", "\\")
-    mci.mciSendStringW(f'close {alias}', None, 0, None)
-    err = mci.mciSendStringW(f'open "{abs_path}" type mpegvideo alias {alias}', None, 0, None)
-    if err:
-        raise RuntimeError(f"MCI open error: {err}")
-    mci.mciSendStringW(f'play {alias} wait', None, 0, None)
-    mci.mciSendStringW(f'close {alias}', None, 0, None)
-
-
-def _play_audio(data):
-    tmp = None
-    try:
-        raw = data.get("audioBase64") if isinstance(data, dict) else None
-        if not raw:
-            print("[Audio] No audioBase64 en el evento")
-            return
-        audio_bytes = base64.b64decode(raw)
-        print(f"[Audio] {len(audio_bytes)} bytes recibidos, reproduciendo...")
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(audio_bytes)
-            tmp = f.name
-        _play_mp3_winmm(tmp)
-    except Exception as e:
-        print(f"[Audio] Error winmm: {e}")
-        # Fallback: playsound si está instalado
-        if tmp:
-            try:
-                from playsound import playsound
-                playsound(tmp, block=True)
-            except Exception as e2:
-                print(f"[Audio] Error playsound: {e2}")
-    finally:
-        time.sleep(0.3)
-        if tmp and os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
-
-
-def play_beep():
-    try:
-        import winsound
-        winsound.Beep(880, 120)
-    except Exception:
-        pass
 
 
 # ── GRABACIÓN Y STT ──────────────────────────────────────
@@ -130,7 +133,6 @@ def record_until_silence(stream):
     max_total      = int(MAX_RECORD_SECS * SAMPLE_RATE / CHUNK)
     speech_started = False
 
-    # Esperar que empiece a hablar
     for _ in range(max_wait):
         data = stream.read(CHUNK, exception_on_overflow=False)
         energy = np.abs(np.frombuffer(data, dtype=np.int16)).mean()
@@ -142,7 +144,6 @@ def record_until_silence(stream):
     if not speech_started:
         return None
 
-    # Grabar hasta silencio
     for _ in range(max_total):
         data = stream.read(CHUNK, exception_on_overflow=False)
         frames.append(data)
