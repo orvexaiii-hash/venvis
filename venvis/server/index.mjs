@@ -74,11 +74,27 @@ app.delete('/api/memory/:key', (req, res) => {
   res.json({ ok: true })
 })
 
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
 io.on('connection', (socket) => {
-  socket.on('user_message', async ({ text, sessionId, voiceMode }) => {
+  socket.on('user_message', async ({ text, sessionId, voiceMode, imageBase64, imageType }) => {
     const sid = sessionId || DEFAULT_SESSION
+
+    let imageData = null
+    if (imageBase64 && imageType) {
+      if (!ALLOWED_IMAGE_TYPES.has(imageType)) {
+        return socket.emit('venvis_error', { message: 'Tipo de imagen no soportado.' })
+      }
+      const byteLen = Math.ceil(imageBase64.length * 0.75)
+      if (byteLen > MAX_IMAGE_BYTES) {
+        return socket.emit('venvis_error', { message: 'La imagen supera el límite de 5MB.' })
+      }
+      imageData = { base64: imageBase64, mediaType: imageType }
+    }
+
     try {
-      const fullText = await streamResponse(socket, text, sid, !!voiceMode)
+      const fullText = await streamResponse(socket, text || '', sid, !!voiceMode, imageData)
       const audioBuffer = await textToSpeech(fullText)
       if (audioBuffer) {
         socket.emit('venvis_audio', {

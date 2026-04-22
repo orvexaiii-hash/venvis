@@ -24,7 +24,13 @@
   <!-- MODO CHAT -->
   <main class="chat-view" id="chatView">
     <div class="messages" id="messages"></div>
+    <div class="img-preview hidden" id="imgPreview">
+      <img id="imgPreviewThumb" src="" alt="preview">
+      <button id="btnRemoveImg" title="Quitar imagen">×</button>
+    </div>
     <div class="input-bar">
+      <button id="btnAttach" title="Adjuntar imagen">📎</button>
+      <input type="file" id="fileInput" accept="image/*" style="display:none">
       <input type="text" id="chatInput" placeholder="Escribí algo..."
              autocomplete="off" autocorrect="off">
       <button id="btnSend">Enviar</button>

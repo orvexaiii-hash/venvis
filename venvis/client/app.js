@@ -8,22 +8,29 @@ let isRecording = false
 let recognition = null
 let pendingVenvisBubble = null
 
-const chatView       = document.getElementById('chatView')
-const voiceView      = document.getElementById('voiceView')
-const messages       = document.getElementById('messages')
-const chatInput      = document.getElementById('chatInput')
-const btnSend        = document.getElementById('btnSend')
-const btnMode        = document.getElementById('btnMode')
-const modeLabel      = document.getElementById('modeLabel')
-const btnPTT         = document.getElementById('btnPTT')
+const chatView        = document.getElementById('chatView')
+const voiceView       = document.getElementById('voiceView')
+const messages        = document.getElementById('messages')
+const chatInput       = document.getElementById('chatInput')
+const btnSend         = document.getElementById('btnSend')
+const btnMode         = document.getElementById('btnMode')
+const modeLabel       = document.getElementById('modeLabel')
+const btnPTT          = document.getElementById('btnPTT')
 const voiceStatus     = document.getElementById('voiceStatus')
 const voiceStatusText = document.getElementById('voiceStatusText')
-const voiceTrans     = document.getElementById('voiceTranscript')
-const btnAudio       = document.getElementById('btnAudio')
-const btnMemory      = document.getElementById('btnMemory')
+const voiceTrans      = document.getElementById('voiceTranscript')
+const btnAudio        = document.getElementById('btnAudio')
+const btnMemory       = document.getElementById('btnMemory')
+const btnAttach       = document.getElementById('btnAttach')
+const fileInput       = document.getElementById('fileInput')
+const imgPreview      = document.getElementById('imgPreview')
+const imgPreviewThumb = document.getElementById('imgPreviewThumb')
+const btnRemoveImg    = document.getElementById('btnRemoveImg')
 
 let audioEnabled = true
 let currentAudio = null
+let pendingImageBase64 = null
+let pendingImageType   = null
 
 btnAudio.addEventListener('click', () => {
   audioEnabled = !audioEnabled
@@ -38,6 +45,46 @@ function stopCurrentAudio() {
   currentAudio.currentTime = 0
   currentAudio = null
 }
+
+// ── IMAGE ATTACH ──
+const ALLOWED_TYPES = { 'image/jpeg': true, 'image/png': true, 'image/gif': true, 'image/webp': true }
+const MAX_SIZE = 5 * 1024 * 1024
+
+function loadImageFile(file) {
+  if (!file || !ALLOWED_TYPES[file.type]) return
+  if (file.size > MAX_SIZE) { alert('La imagen supera el límite de 5MB.'); return }
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const dataUrl = e.target.result
+    const comma = dataUrl.indexOf(',')
+    pendingImageBase64 = dataUrl.slice(comma + 1)
+    pendingImageType   = file.type
+    imgPreviewThumb.src = dataUrl
+    imgPreview.classList.remove('hidden')
+    btnAttach.classList.add('has-image')
+  }
+  reader.readAsDataURL(file)
+}
+
+function clearPendingImage() {
+  pendingImageBase64 = null
+  pendingImageType   = null
+  imgPreviewThumb.src = ''
+  imgPreview.classList.add('hidden')
+  btnAttach.classList.remove('has-image')
+  fileInput.value = ''
+}
+
+btnAttach.addEventListener('click', () => fileInput.click())
+fileInput.addEventListener('change', () => loadImageFile(fileInput.files[0]))
+btnRemoveImg.addEventListener('click', clearPendingImage)
+
+document.addEventListener('paste', (e) => {
+  if (currentMode !== 'chat') return
+  const item = [...e.clipboardData.items].find(i => i.kind === 'file' && ALLOWED_TYPES[i.type])
+  if (item) loadImageFile(item.getAsFile())
+})
+
 const memoryOverlay  = document.getElementById('memoryOverlay')
 const memoryList     = document.getElementById('memoryList')
 const btnCloseMemory = document.getElementById('btnCloseMemory')
@@ -122,13 +169,22 @@ btnMode.addEventListener('click', () => {
 // ── CHAT ──
 function sendChatMessage() {
   const text = chatInput.value.trim()
-  if (!text) return
+  if (!text && !pendingImageBase64) return
   chatInput.value = ''
-  appendUserMessage(text)
+
+  appendUserMessage(text, pendingImageBase64)
+
+  const payload = { text: text || '', sessionId: SESSION_ID }
+  if (pendingImageBase64) {
+    payload.imageBase64 = pendingImageBase64
+    payload.imageType   = pendingImageType
+  }
+  clearPendingImage()
+
   btnSend.disabled = true
   chatInput.disabled = true
   pendingVenvisBubble = appendVenvisThinking()
-  socket.emit('user_message', { text, sessionId: SESSION_ID })
+  socket.emit('user_message', payload)
 }
 
 btnSend.addEventListener('click', sendChatMessage)
@@ -136,10 +192,20 @@ chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage() }
 })
 
-function appendUserMessage(text) {
+function appendUserMessage(text, imageBase64) {
   const div = document.createElement('div')
   div.className = 'msg-user'
-  div.textContent = text
+  if (imageBase64) {
+    const img = document.createElement('img')
+    img.className = 'msg-user-img'
+    img.src = imgPreviewThumb.src || `data:image/jpeg;base64,${imageBase64}`
+    div.appendChild(img)
+  }
+  if (text) {
+    const span = document.createElement('span')
+    span.textContent = text
+    div.appendChild(span)
+  }
   messages.appendChild(div)
   scrollBottom()
 }

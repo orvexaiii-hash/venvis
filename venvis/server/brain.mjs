@@ -226,18 +226,26 @@ async function streamFinal(socket, messages, systemPrompt) {
 
 // ── MAIN EXPORT ──────────────────────────────────────────
 
-export async function streamResponse(socket, userText, sessionId, voiceMode = false) {
+export async function streamResponse(socket, userText, sessionId, voiceMode = false, imageData = null) {
   const history      = getRecentMessages(sessionId, 10)
   const memoryItems  = getAllMemory(sessionId)
   const systemPrompt = buildSystemPrompt(memoryItems, voiceMode)
   const tools        = buildTools()
 
+  const userContent = imageData
+    ? [
+        { type: 'image', source: { type: 'base64', media_type: imageData.mediaType, data: imageData.base64 } },
+        { type: 'text',  text: userText || 'Analizá esta imagen.' }
+      ]
+    : userText
+
   const baseMessages = [
     ...history.map(m => ({ role: m.role === 'venvis' ? 'assistant' : 'user', content: m.content })),
-    { role: 'user', content: userText }
+    { role: 'user', content: userContent }
   ]
 
-  saveMessage(sessionId, 'user', userText)
+  const savedText = userText || '[imagen]'
+  saveMessage(sessionId, 'user', savedText)
 
   let fullText = ''
 
