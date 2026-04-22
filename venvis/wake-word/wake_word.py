@@ -26,8 +26,8 @@ TTS_PITCH   = "-2Hz"
 STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
 
 SILENCE_THRESHOLD = 500   # energía mínima para considerar voz
-SILENCE_SECS      = 1.2   # segundos de silencio para cortar
-WAIT_SECS         = 5     # máximo esperando que empiece a hablar
+SILENCE_SECS      = 0.7   # segundos de silencio para cortar
+WAIT_SECS         = 3     # máximo esperando que empiece a hablar
 MAX_RECORD_SECS   = 12
 # ────────────────────────────────────────────────────────
 
