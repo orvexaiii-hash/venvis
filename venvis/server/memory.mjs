@@ -3,7 +3,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const DB_PATH = join(__dirname, '..', 'venvis.db')
+const DB_PATH = process.env.DB_PATH || join(__dirname, '..', 'venvis.db')
 
 const db = new DatabaseSync(DB_PATH)
 

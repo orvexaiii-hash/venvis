@@ -1,4 +1,4 @@
-const CACHE = 'venvis-v1'
+const CACHE = 'venvis-v2'
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icon.svg']
 
 self.addEventListener('install', (e) => {
