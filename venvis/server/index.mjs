@@ -8,6 +8,7 @@ import { dirname, join } from 'path'
 import { streamResponse } from './brain.mjs'
 import { textToSpeech } from './tts.mjs'
 import { getAllMemory, getRecentMessages, deleteMemory, ensureSession } from './memory.mjs'
+import { google } from 'googleapis'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3000
@@ -33,6 +34,40 @@ app.get('/api/history', (req, res) => {
   res.json(getRecentMessages(sessionId, 50))
 })
 
+// ── OAuth Calendar setup (rutas temporales) ──────────────
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  const oauthClient = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    'https://venvis.orvexautomation.com/oauth/callback'
+  )
+
+  app.get('/oauth/start', (req, res) => {
+    const url = oauthClient.generateAuthUrl({
+      access_type: 'offline',
+      prompt: 'consent',
+      scope: ['https://www.googleapis.com/auth/calendar']
+    })
+    res.redirect(url)
+  })
+
+  app.get('/oauth/callback', async (req, res) => {
+    try {
+      const { tokens } = await oauthClient.getToken(req.query.code)
+      res.send(`<pre style="font-size:18px;padding:20px">
+✅ REFRESH TOKEN OBTENIDO
+
+${tokens.refresh_token}
+
+Copiá este valor y pasáselo a Claude.
+</pre>`)
+    } catch (e) {
+      res.send(`<pre>Error: ${e.message}</pre>`)
+    }
+  })
+}
+// ─────────────────────────────────────────────────────────
+
 app.delete('/api/memory/:key', (req, res) => {
   const sessionId = req.query.session || DEFAULT_SESSION
   deleteMemory(sessionId, decodeURIComponent(req.params.key))
@@ -40,10 +75,10 @@ app.delete('/api/memory/:key', (req, res) => {
 })
 
 io.on('connection', (socket) => {
-  socket.on('user_message', async ({ text, sessionId }) => {
+  socket.on('user_message', async ({ text, sessionId, voiceMode }) => {
     const sid = sessionId || DEFAULT_SESSION
     try {
-      const fullText = await streamResponse(socket, text, sid)
+      const fullText = await streamResponse(socket, text, sid, !!voiceMode)
       const audioBuffer = await textToSpeech(fullText)
       if (audioBuffer) {
         socket.emit('venvis_audio', {

@@ -16,9 +16,28 @@ const btnSend        = document.getElementById('btnSend')
 const btnMode        = document.getElementById('btnMode')
 const modeLabel      = document.getElementById('modeLabel')
 const btnPTT         = document.getElementById('btnPTT')
-const voiceStatus    = document.getElementById('voiceStatus')
+const voiceStatus     = document.getElementById('voiceStatus')
+const voiceStatusText = document.getElementById('voiceStatusText')
 const voiceTrans     = document.getElementById('voiceTranscript')
+const btnAudio       = document.getElementById('btnAudio')
 const btnMemory      = document.getElementById('btnMemory')
+
+let audioEnabled = true
+let currentAudio = null
+
+btnAudio.addEventListener('click', () => {
+  audioEnabled = !audioEnabled
+  btnAudio.textContent = audioEnabled ? '🔊' : '🔇'
+  btnAudio.title = audioEnabled ? 'Silenciar audio' : 'Activar audio'
+  if (!audioEnabled && currentAudio) stopCurrentAudio()
+})
+
+function stopCurrentAudio() {
+  if (!currentAudio) return
+  currentAudio.pause()
+  currentAudio.currentTime = 0
+  currentAudio = null
+}
 const memoryOverlay  = document.getElementById('memoryOverlay')
 const memoryList     = document.getElementById('memoryList')
 const btnCloseMemory = document.getElementById('btnCloseMemory')
@@ -40,7 +59,7 @@ function initSpeechRecognition() {
   recognition.onstart = () => {
     isRecording = true
     btnPTT.classList.add('recording')
-    voiceStatus.textContent = 'Escuchando...'
+    setVoiceState('listening')
     voiceTrans.textContent = ''
   }
 
@@ -48,15 +67,18 @@ function initSpeechRecognition() {
     const text = e.results[0][0].transcript.trim()
     if (!text) return
     voiceTrans.textContent = `Vos: ${text}`
-    voiceStatus.textContent = 'Pensando...'
-    socket.emit('user_message', { text, sessionId: SESSION_ID })
+    setVoiceState('processing')
+    socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
   }
 
   recognition.onerror = (e) => {
     console.error('[STT]', e.error)
-    voiceStatus.textContent = e.error === 'not-allowed'
-      ? 'Permiso de micrófono denegado'
-      : 'Listo'
+    if (e.error === 'not-allowed') {
+      voiceStatusText.textContent = 'Permiso de micrófono denegado'
+      voiceStatus.className = 'voice-status'
+    } else {
+      setVoiceState('idle')
+    }
     isRecording = false
     btnPTT.classList.remove('recording')
   }
@@ -64,13 +86,23 @@ function initSpeechRecognition() {
   recognition.onend = () => {
     isRecording = false
     btnPTT.classList.remove('recording')
-    if (voiceStatus.textContent === 'Escuchando...') {
-      voiceStatus.textContent = 'Listo'
-    }
+    if (voiceStatus.classList.contains('listening')) setVoiceState('idle')
   }
 }
 
 initSpeechRecognition()
+
+// ── VOICE STATE ──
+function setVoiceState(state) {
+  voiceStatus.className = 'voice-status ' + (state !== 'idle' ? state : '')
+  const labels = {
+    idle:       'Listo',
+    listening:  'Escuchando',
+    processing: 'Procesando',
+    speaking:   'VENVIS está hablando'
+  }
+  voiceStatusText.textContent = labels[state] ?? state
+}
 
 // ── MODO TOGGLE ──
 btnMode.addEventListener('click', () => {
@@ -83,7 +115,7 @@ btnMode.addEventListener('click', () => {
     chatView.classList.add('hidden')
     voiceView.classList.remove('hidden')
     modeLabel.textContent = 'Chat'
-    voiceStatus.textContent = 'Listo'
+    setVoiceState('idle')
   }
 })
 
@@ -149,18 +181,21 @@ socket.on('venvis_done', ({ text }) => {
   chatInput.disabled = false
   chatInput.focus()
   scrollBottom()
-  if (currentMode === 'voice') voiceStatus.textContent = 'Listo'
 })
 
 socket.on('venvis_audio', ({ audioBase64 }) => {
+  if (!audioEnabled) return
+  stopCurrentAudio()
   const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
   const blob = new Blob([bytes], { type: 'audio/mpeg' })
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
-  if (currentMode === 'voice') voiceStatus.textContent = 'Hablando...'
+  currentAudio = audio
+  if (currentMode === 'voice') setVoiceState('speaking')
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
-    if (currentMode === 'voice') voiceStatus.textContent = 'Listo'
+    currentAudio = null
+    if (currentMode === 'voice') setVoiceState('idle')
   })
   audio.play().catch(() => {})
 })
@@ -174,12 +209,13 @@ socket.on('venvis_error', ({ message }) => {
   div.textContent = message
   messages.appendChild(div)
   scrollBottom()
-  if (currentMode === 'voice') voiceStatus.textContent = 'Listo'
+  if (currentMode === 'voice') setVoiceState('idle')
 })
 
 // ── VOZ: push-to-talk con SpeechRecognition ──
 function startListening() {
   if (!recognition || isRecording) return
+  stopCurrentAudio()
   try {
     recognition.start()
   } catch (err) {

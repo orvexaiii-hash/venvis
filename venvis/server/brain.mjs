@@ -102,7 +102,7 @@ function needsSearch(text) {
 
 // ── SYSTEM PROMPT ────────────────────────────────────────
 
-function buildSystemPrompt(memoryItems) {
+function buildSystemPrompt(memoryItems, voiceMode = false) {
   const memLines = memoryItems.length
     ? memoryItems.map(m => `- ${m.key}: ${m.value}`).join('\n')
     : '- Todavía no sabés nada de él, es la primera vez que hablan.'
@@ -119,7 +119,11 @@ function buildSystemPrompt(memoryItems) {
     IR_ID   && '- Control IR (send_ir_command): comandos al televisor (power, vol_up, vol_down, ch_up, ch_down, mute)'
   ].filter(Boolean).join('\n')
 
-  return `Sos VENVIS, asistente personal de IA. Tu modelo de personalidad es Jarvis de Iron Man: formal pero no rígido, inteligente, ligeramente irónico y sarcástico cuando la situación lo amerita, nunca vulgar ni informal. Hablás en español rioplatense pero con registro elevado. No usás malas palabras bajo ninguna circunstancia. Sos directo y eficiente. Cuando el usuario está equivocado, se lo decís con claridad y fundamento, sin suavizarlo innecesariamente. No adulás ni validás por defecto. Tenés criterio propio y no tenés problema en contradecir al usuario si corresponde.
+  const voiceRule = voiceMode
+    ? '\nMODO VOZ ACTIVO: Respondé en máximo 2-3 oraciones. Sé directo y conciso. Si la respuesta requiere más detalle, resumí lo esencial y preguntá si el usuario quiere que continúes. No uses listas, bullets ni markdown — solo texto natural para hablar.'
+    : ''
+
+  return `Sos VENVIS, asistente personal de IA. Tu modelo de personalidad es Jarvis de Iron Man: formal pero no rígido, inteligente, ligeramente irónico y sarcástico cuando la situación lo amerita, nunca vulgar ni informal. Hablás en español rioplatense pero con registro elevado. No usás malas palabras bajo ninguna circunstancia. Sos directo y eficiente. Cuando el usuario está equivocado, se lo decís con claridad y fundamento, sin suavizarlo innecesariamente. No adulás ni validás por defecto. Tenés criterio propio y no tenés problema en contradecir al usuario si corresponde.${voiceRule}
 
 REGLA CRÍTICA PARA DOMÓTICA: Cuando el usuario pide encender, apagar o controlar un dispositivo, SIEMPRE llamá la herramienta correspondiente de inmediato. Nunca preguntes por marca, modelo, protocolo ni información adicional. Si el dispositivo está en la lista, actuá. Si no está, decilo en una oración.
 
@@ -222,10 +226,10 @@ async function streamFinal(socket, messages, systemPrompt) {
 
 // ── MAIN EXPORT ──────────────────────────────────────────
 
-export async function streamResponse(socket, userText, sessionId) {
+export async function streamResponse(socket, userText, sessionId, voiceMode = false) {
   const history      = getRecentMessages(sessionId, 10)
   const memoryItems  = getAllMemory(sessionId)
-  const systemPrompt = buildSystemPrompt(memoryItems)
+  const systemPrompt = buildSystemPrompt(memoryItems, voiceMode)
   const tools        = buildTools()
 
   const baseMessages = [

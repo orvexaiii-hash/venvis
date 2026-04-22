@@ -16,6 +16,7 @@
     <div class="header-title">VENVIS</div>
     <div class="header-actions">
       <button id="btnMode"><span id="modeLabel">Voz</span></button>
+      <button id="btnAudio" title="Silenciar audio">🔊</button>
       <button id="btnMemory">Memoria</button>
     </div>
   </header>
@@ -33,7 +34,16 @@
   <!-- MODO VOZ -->
   <main class="voice-view hidden" id="voiceView">
     <div class="voice-name">VENVIS</div>
-    <div class="voice-status" id="voiceStatus">Listo</div>
+    <div class="voice-status" id="voiceStatus">
+      <span id="voiceStatusText">Listo</span>
+      <div class="voice-waves" id="voiceWaves">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="voice-dots" id="voiceDots">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="voice-speaking-dot" id="voiceSpeakingDot"></div>
+    </div>
     <button class="push-to-talk" id="btnPTT" aria-label="Mantener para hablar">
       <div class="ptt-ring"></div>
     </button>
