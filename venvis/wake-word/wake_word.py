@@ -9,24 +9,26 @@ import time
 import tempfile
 import os
 import threading
-import subprocess
-import sys
+import ctypes
 
 # ── CONFIG ──────────────────────────────────────────────
-SERVER_URL   = "https://venvis.orvexautomation.com"
-SESSION_ID   = "agus"
-WAKE_MODEL   = "hey_jarvis"
-THRESHOLD    = 0.3
-SAMPLE_RATE  = 16000
-CHUNK        = 1280   # 80ms @ 16kHz — requerido por openwakeword
+SERVER_URL  = "https://venvis.orvexautomation.com"
+SESSION_ID  = "agus"
+WAKE_MODEL  = "hey_jarvis"
+THRESHOLD   = 0.3
+SAMPLE_RATE = 16000
+CHUNK       = 1280   # 80ms @ 16kHz
 
-STOP_WORDS   = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
+STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
+
+SILENCE_THRESHOLD = 500   # energía mínima para considerar voz
+SILENCE_SECS      = 1.2   # segundos de silencio para cortar
+WAIT_SECS         = 5     # máximo esperando que empiece a hablar
+MAX_RECORD_SECS   = 12
 # ────────────────────────────────────────────────────────
 
 sio        = socketio.Client(logger=False, engineio_logger=False)
 recognizer = sr.Recognizer()
-recognizer.energy_threshold = 300
-recognizer.dynamic_energy_threshold = True
 
 print("Descargando/verificando modelo wake word...")
 openwakeword.utils.download_models([WAKE_MODEL])
@@ -63,79 +65,108 @@ def on_error(data):
     print(f"[Error] {data.get('message', '')}")
 
 
-# ── HELPERS ──────────────────────────────────────────────
+# ── AUDIO PLAYBACK ───────────────────────────────────────
 
-_current_audio_proc = None
-_audio_lock = threading.Lock()
+def _play_mp3_winmm(path):
+    """Reproduce MP3 usando Windows MCI directamente (sin dependencias externas)."""
+    mci = ctypes.windll.winmm
+    alias = "venvis_mp3"
+    abs_path = os.path.abspath(path).replace("/", "\\")
+    mci.mciSendStringW(f'close {alias}', None, 0, None)
+    err = mci.mciSendStringW(f'open "{abs_path}" type mpegvideo alias {alias}', None, 0, None)
+    if err:
+        raise RuntimeError(f"MCI open error: {err}")
+    mci.mciSendStringW(f'play {alias} wait', None, 0, None)
+    mci.mciSendStringW(f'close {alias}', None, 0, None)
+
 
 def _play_audio(data):
-    global _current_audio_proc
     tmp = None
     try:
-        audio_bytes = base64.b64decode(data["audioBase64"])
+        raw = data.get("audioBase64") if isinstance(data, dict) else None
+        if not raw:
+            print("[Audio] No audioBase64 en el evento")
+            return
+        audio_bytes = base64.b64decode(raw)
+        print(f"[Audio] {len(audio_bytes)} bytes recibidos, reproduciendo...")
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(audio_bytes)
             tmp = f.name
-        proc = subprocess.Popen(
-            ['powershell', '-c',
-             f'Add-Type -AssemblyName presentationCore;'
-             f'$mp=[System.Windows.Media.MediaPlayer]::new();'
-             f'$mp.Open([Uri]::new("{tmp}"));'
-             f'$mp.Play();Start-Sleep 30;$mp.Close()'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        with _audio_lock:
-            _current_audio_proc = proc
-        proc.wait()
+        _play_mp3_winmm(tmp)
     except Exception as e:
-        print(f"[Audio] Error: {e}")
+        print(f"[Audio] Error winmm: {e}")
+        # Fallback: playsound si está instalado
+        if tmp:
+            try:
+                from playsound import playsound
+                playsound(tmp, block=True)
+            except Exception as e2:
+                print(f"[Audio] Error playsound: {e2}")
     finally:
-        with _audio_lock:
-            _current_audio_proc = None
+        time.sleep(0.3)
         if tmp and os.path.exists(tmp):
-            try: os.unlink(tmp)
-            except: pass
-
-
-def stop_audio():
-    global _current_audio_proc
-    with _audio_lock:
-        if _current_audio_proc and _current_audio_proc.poll() is None:
-            _current_audio_proc.terminate()
-            _current_audio_proc = None
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
 
 def play_beep():
     try:
-        subprocess.Popen(
-            ['powershell', '-c', '[console]::beep(880,120)'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ).wait()
+        import winsound
+        winsound.Beep(880, 120)
     except Exception:
         pass
 
 
-def listen_and_transcribe(pa_stream) -> str | None:
-    """Pausa el stream de wake word, escucha con VAD, retoma."""
-    pa_stream.stop_stream()
-    text = None
+# ── GRABACIÓN Y STT ──────────────────────────────────────
+
+def record_until_silence(stream):
+    """Graba desde el stream existente usando VAD por energía."""
+    frames = []
+    silence_chunks = 0
+    max_silence    = int(SILENCE_SECS * SAMPLE_RATE / CHUNK)
+    max_wait       = int(WAIT_SECS * SAMPLE_RATE / CHUNK)
+    max_total      = int(MAX_RECORD_SECS * SAMPLE_RATE / CHUNK)
+    speech_started = False
+
+    # Esperar que empiece a hablar
+    for _ in range(max_wait):
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        energy = np.abs(np.frombuffer(data, dtype=np.int16)).mean()
+        if energy > SILENCE_THRESHOLD:
+            speech_started = True
+            frames.append(data)
+            break
+
+    if not speech_started:
+        return None
+
+    # Grabar hasta silencio
+    for _ in range(max_total):
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        frames.append(data)
+        energy = np.abs(np.frombuffer(data, dtype=np.int16)).mean()
+        if energy < SILENCE_THRESHOLD:
+            silence_chunks += 1
+            if silence_chunks >= max_silence:
+                break
+        else:
+            silence_chunks = 0
+
+    return b''.join(frames)
+
+
+def transcribe(audio_bytes):
+    """Envía audio a Google STT y retorna el texto."""
+    audio_data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
     try:
-        with sr.Microphone(sample_rate=SAMPLE_RATE) as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.2)
-            try:
-                audio = recognizer.listen(source, timeout=6, phrase_time_limit=12)
-            except sr.WaitTimeoutError:
-                return None
-        text = recognizer.recognize_google(audio, language="es-AR")
+        return recognizer.recognize_google(audio_data, language="es-AR")
     except sr.UnknownValueError:
-        pass
+        return None
     except sr.RequestError as e:
-        print(f"[STT] Error: {e}")
-    except Exception as e:
-        print(f"[STT] Error inesperado: {e}")
-    finally:
-        pa_stream.start_stream()
-    return text
+        print(f"[STT] Error de red: {e}")
+        return None
 
 
 # ── MAIN ─────────────────────────────────────────────────
@@ -172,11 +203,18 @@ def main():
 
             print(f"\n[Wake word! score={score:.2f}]")
             oww.reset()
-            stop_audio()
             play_beep()
 
             print("Escuchando tu mensaje...")
-            text = listen_and_transcribe(stream)
+            audio_bytes = record_until_silence(stream)
+
+            if not audio_bytes:
+                print("No se detectó voz.")
+                print('Escuchando... (decí "hey jarvis")')
+                continue
+
+            print("Transcribiendo...")
+            text = transcribe(audio_bytes)
 
             if not text:
                 print("No se entendió.")
@@ -189,7 +227,7 @@ def main():
                 print("Hasta luego.")
                 break
 
-            sio.emit("user_message", {"text": text, "sessionId": SESSION_ID})
+            sio.emit("user_message", {"text": text, "sessionId": SESSION_ID, "voiceMode": True})
 
     except KeyboardInterrupt:
         print("\nDeteniendo...")
