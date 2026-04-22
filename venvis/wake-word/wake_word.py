@@ -15,7 +15,8 @@ import ctypes
 SERVER_URL  = "https://venvis.orvexautomation.com"
 SESSION_ID  = "agus"
 WAKE_MODEL  = "hey_jarvis"
-THRESHOLD   = 0.3
+THRESHOLD   = 0.5
+TRIGGER_HITS = 2   # chunks consecutivos por encima del umbral para activar
 SAMPLE_RATE = 16000
 CHUNK       = 1280   # 80ms @ 16kHz
 
@@ -187,6 +188,7 @@ def main():
 
     print('Escuchando... (decí "hey jarvis" para activar)\n')
 
+    hits = 0
     try:
         while True:
             chunk = np.frombuffer(
@@ -196,12 +198,18 @@ def main():
             pred  = oww.predict(chunk)
             score = list(pred.values())[0] if pred else 0.0
 
-            if score > 0.1:
+            if score > 0.2:
                 print(f"  score: {score:.3f}", end="\r")
 
-            if score < THRESHOLD:
+            if score >= THRESHOLD:
+                hits += 1
+            else:
+                hits = 0
+
+            if hits < TRIGGER_HITS:
                 continue
 
+            hits = 0
             print(f"\n[Wake word! score={score:.2f}]")
             oww.reset()
             play_beep()
