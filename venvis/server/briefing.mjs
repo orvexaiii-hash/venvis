@@ -2,7 +2,7 @@ import { CALENDAR_ENABLED, getTodayEvents } from './calendar.mjs'
 import { searchWeb } from './search.mjs'
 
 const WEATHER_LOCATION = process.env.WEATHER_LOCATION || ''
-const SERPER_API_KEY   = process.env.SERPER_API_KEY
+const SESSION_NAME     = process.env.SESSION_NAME || 'Charly'
 
 function greetingByHour(hour) {
   if (hour < 12) return 'Buenos días'
@@ -41,7 +41,7 @@ async function getWeather() {
 }
 
 async function getNewsHeadline() {
-  if (!SERPER_API_KEY) return null
+  if (!process.env.SERPER_API_KEY) return null
   try {
     const results = await searchWeb('últimas noticias Argentina')
     return results[0]?.title || null
@@ -53,7 +53,8 @@ async function getNewsHeadline() {
 export async function generateBriefing() {
   const now     = new Date()
   const hour    = now.getHours()
-  const parts   = [`${greetingByHour(hour)}, Charly. Son las ${formatTime(now)}.`]
+  const name    = SESSION_NAME.charAt(0).toUpperCase() + SESSION_NAME.slice(1)
+  const parts   = [`${greetingByHour(hour)}, ${name}. Son las ${formatTime(now)}.`]
 
   const [weather, calendarText, headline] = await Promise.allSettled([
     getWeather(),
@@ -62,21 +63,25 @@ export async function generateBriefing() {
   ])
 
   // Weather
-  const w = weather.value
+  const w = weather.status === 'fulfilled' ? weather.value : null
   if (w) parts.push(`Afuera hay ${w.temp} grados y está ${w.desc}.`)
 
   // Calendar
-  const cal = calendarText.value
-  if (cal && !cal.includes('No tenés eventos') && !cal.includes('no configurado')) {
+  const cal = calendarText.status === 'fulfilled' ? calendarText.value : null
+  if (cal && !cal.includes('No tenés eventos')) {
     const eventLines = cal.split('\n').filter(l => l.startsWith('-'))
     const n = eventLines.length
-    parts.push(`Tenés ${n} evento${n > 1 ? 's' : ''} pendiente${n > 1 ? 's' : ''} hoy.`)
+    if (n > 0) {
+      parts.push(`Tenés ${n} evento${n > 1 ? 's' : ''} pendiente${n > 1 ? 's' : ''} hoy.`)
+    } else {
+      parts.push('Sin eventos pendientes hoy.')
+    }
   } else {
     parts.push('Sin eventos pendientes hoy.')
   }
 
   // News
-  const news = headline.value
+  const news = headline.status === 'fulfilled' ? headline.value : null
   parts.push(news ? `En las noticias: ${news}.` : 'Sin novedades urgentes por ahora.')
 
   return parts.join(' ')
