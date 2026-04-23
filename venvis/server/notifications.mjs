@@ -1,7 +1,7 @@
 import webPush from 'web-push'
 import { db } from './db.mjs'
 
-const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY
+export const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY
 const VAPID_EMAIL       = process.env.VAPID_EMAIL || 'orvex.aiii@gmail.com'
 
