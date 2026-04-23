@@ -7,6 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 export const DB_PATH = process.env.DB_PATH || join(__dirname, '..', 'venvis.db')
 export const db = new DatabaseSync(DB_PATH)
 
+db.exec('PRAGMA journal_mode=WAL')
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

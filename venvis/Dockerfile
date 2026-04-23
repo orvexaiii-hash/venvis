@@ -2,6 +2,7 @@ FROM node:22-slim
 
 RUN apt-get update && apt-get install -y \
     python3 python3-pip \
+    iputils-ping \
     --no-install-recommends \
   && pip3 install edge-tts --break-system-packages \
   && apt-get clean \
