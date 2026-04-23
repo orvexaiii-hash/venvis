@@ -5,6 +5,7 @@ import { Server } from 'socket.io'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
+import { db } from './db.mjs'
 import { streamResponse } from './brain.mjs'
 import { textToSpeech } from './tts.mjs'
 import { getAllMemory, getRecentMessages, deleteMemory, ensureSession } from './memory.mjs'
@@ -19,7 +20,8 @@ const PORT         = process.env.PORT || 3000
 const SESSION_NAME = process.env.SESSION_NAME || 'agus'
 const DEFAULT_SESSION = SESSION_NAME
 
-ensureSession(DEFAULT_SESSION, SESSION_NAME)
+ensureSession('charly', 'Charly')
+ensureSession('agus', 'Agus')
 
 const app        = express()
 const httpServer = createServer(app)
@@ -57,6 +59,26 @@ app.post('/api/push/subscribe', (req, res) => {
   } catch (err) {
     console.error('[Push] Subscribe error:', err.message)
     res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Health ────────────────────────────────────────────────
+app.get('/health', (_req, res) => {
+  try {
+    db.prepare('SELECT 1').get()
+    res.json({
+      status:   'ok',
+      uptime:   Math.round(process.uptime()),
+      session:  DEFAULT_SESSION,
+      features: {
+        push:     !!VAPID_PUBLIC_KEY,
+        presence: !!process.env.PHONE_IP,
+        calendar: !!process.env.GOOGLE_REFRESH_TOKEN,
+        search:   !!(process.env.SERPER_API_KEY || process.env.GOOGLE_API_KEY)
+      }
+    })
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message })
   }
 })
 
