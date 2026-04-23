@@ -20,3 +20,27 @@ self.addEventListener('fetch', (e) => {
   if (e.request.url.includes('/api/') || e.request.url.includes('socket.io')) return
   e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)))
 })
+
+self.addEventListener('push', (e) => {
+  const data = e.data?.json() || {}
+  e.waitUntil(
+    self.registration.showNotification(data.title || 'VENVIS', {
+      body: data.body || '',
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      data: { url: data.url || 'https://venvis.orvexautomation.com' }
+    })
+  )
+})
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close()
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+      for (const client of windowClients) {
+        if (client.url === e.notification.data?.url && 'focus' in client) return client.focus()
+      }
+      return clients.openWindow(e.notification.data?.url || 'https://venvis.orvexautomation.com')
+    })
+  )
+})

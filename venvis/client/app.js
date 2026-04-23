@@ -348,3 +348,46 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
+
+// ── PUSH NOTIFICATIONS ──
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw     = atob(base64)
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
+}
+
+async function subscribeToPush(reg) {
+  try {
+    const existing = await reg.pushManager.getSubscription()
+    if (existing) return
+
+    const res = await fetch('/api/push/vapid-key')
+    if (!res.ok) return
+    const { publicKey } = await res.json()
+    if (!publicKey) return
+
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') return
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    })
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub)
+    })
+  } catch (err) {
+    console.error('[Push]', err)
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(reg => {
+      if ('PushManager' in window) subscribeToPush(reg)
+    })
+    .catch(err => console.error('[SW]', err))
+}
