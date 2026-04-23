@@ -278,6 +278,31 @@ socket.on('venvis_error', ({ message }) => {
   if (currentMode === 'voice') setVoiceState('idle')
 })
 
+socket.on('venvis_proactive', ({ text, audioBase64 }) => {
+  // Show as a Venvis message even though user didn't ask
+  const div = document.createElement('div')
+  div.className = 'msg-venvis'
+  div.innerHTML = marked.parse(text || '')
+  messages.appendChild(div)
+  scrollBottom()
+
+  if (audioBase64 && audioEnabled) {
+    stopCurrentAudio()
+    const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
+    const blob  = new Blob([bytes], { type: 'audio/mpeg' })
+    const url   = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    currentAudio = audio
+    if (currentMode === 'voice') setVoiceState('speaking')
+    audio.addEventListener('ended', () => {
+      URL.revokeObjectURL(url)
+      currentAudio = null
+      if (currentMode === 'voice') setVoiceState('idle')
+    })
+    audio.play().catch(() => {})
+  }
+})
+
 // ── VOZ: push-to-talk con SpeechRecognition ──
 function startListening() {
   if (!recognition || isRecording) return

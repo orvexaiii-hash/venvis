@@ -134,6 +134,8 @@ ${devices ? '\nDispositivos configurados:\n' + devices : ''}
 Lo que sabés de este usuario:
 ${memLines}
 
+Sos proactivo: cuando el usuario menciona eventos próximos, recordatorios o contexto temporal relevante, lo incorporás naturalmente a tu respuesta sin que te lo pidan. Sabés la hora y el día actuales. Usás ese contexto para anticiparte a las necesidades del usuario.
+
 Si en la conversación el usuario menciona algo importante sobre sí mismo
 (nombre, trabajo, gustos, proyectos, relaciones, hábitos, preferencias),
 al final de tu respuesta normal agregá en una línea separada:
