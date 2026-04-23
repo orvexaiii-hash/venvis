@@ -140,7 +140,12 @@ al final de tu respuesta normal agregá en una línea separada:
 __MEMORIZE__{"key":"nombre_clave_corta","value":"dato concreto","confidence":8}__
 
 Solo un __MEMORIZE__ por respuesta, solo si realmente vale la pena recordarlo.
-No se lo menciones al usuario, guardalo en silencio.`
+No se lo menciones al usuario, guardalo en silencio.
+
+Si el usuario menciona que tiene que hacer algo o que recordarle algo mañana o en un momento específico, al final de tu respuesta agregá en una línea separada:
+__REMIND__{"text":"descripción del recordatorio","remind_at":"YYYY-MM-DDTHH:MM:00"}__
+
+Solo un __REMIND__ por respuesta, solo cuando el usuario explícitamente mencione querer ser recordado. No se lo menciones al usuario.`
 }
 
 // ── TOOL EXECUTOR ────────────────────────────────────────
@@ -208,6 +213,16 @@ function extractMemorize(fullText) {
   const clean = fullText.replace(/__MEMORIZE__\{.*?\}__/, '').trimEnd()
   try { return { clean, memory: JSON.parse(match[1]) } }
   catch { return { clean, memory: null } }
+}
+
+// ── REMIND EXTRACTOR ─────────────────────────────────────
+
+function extractRemind(fullText) {
+  const match = fullText.match(/__REMIND__(\{.*?\})__/)
+  if (!match) return { clean: fullText, remind: null }
+  const clean = fullText.replace(/__REMIND__\{.*?\}__/, '').trimEnd()
+  try { return { clean, remind: JSON.parse(match[1]) } }
+  catch { return { clean, remind: null } }
 }
 
 // ── STREAM FINAL RESPONSE ────────────────────────────────
@@ -295,8 +310,13 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
     }
   }
 
-  const { clean, memory } = extractMemorize(fullText)
+  const { clean: cleanAfterMemory, memory } = extractMemorize(fullText)
+  const { clean, remind } = extractRemind(cleanAfterMemory)
   if (memory) upsertMemory(sessionId, memory.key, memory.value, memory.confidence ?? 7)
+  if (remind) {
+    const { saveReminder } = await import('./reminders.mjs')
+    saveReminder(sessionId, remind.text, remind.remind_at)
+  }
   saveMessage(sessionId, 'venvis', clean)
   socket.emit('venvis_done', { text: clean })
   return clean
