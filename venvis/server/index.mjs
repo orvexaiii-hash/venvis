@@ -28,7 +28,14 @@ const httpServer = createServer(app)
 const io         = new Server(httpServer, { cors: { origin: '*' } })
 
 app.use(express.json())
-app.use(express.static(join(__dirname, '..', 'client')))
+app.use(express.static(join(__dirname, '..', 'client'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+      res.setHeader('Pragma', 'no-cache')
+    }
+  }
+}))
 
 // ── API ──────────────────────────────────────────────────
 app.get('/api/memory', (req, res) => {
