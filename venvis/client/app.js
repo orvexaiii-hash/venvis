@@ -1,7 +1,8 @@
 /* global io, marked */
 
 const socket = io()
-const SESSION_ID = 'agus'
+let SESSION_ID   = localStorage.getItem('venvis_session') || null
+let SESSION_USER = localStorage.getItem('venvis_user')   || null
 
 let currentMode = 'chat'
 let isRecording = false
@@ -26,6 +27,31 @@ const fileInput       = document.getElementById('fileInput')
 const imgPreview      = document.getElementById('imgPreview')
 const imgPreviewThumb = document.getElementById('imgPreviewThumb')
 const btnRemoveImg    = document.getElementById('btnRemoveImg')
+const sessionPicker   = document.getElementById('sessionPicker')
+const connDot         = document.getElementById('connDot')
+
+// ── SESSION PICKER ──
+function initSessionPicker() {
+  if (SESSION_ID) {
+    sessionPicker.classList.add('hidden')
+    return
+  }
+  document.querySelectorAll('.session-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      SESSION_ID   = btn.dataset.session
+      SESSION_USER = btn.dataset.name
+      localStorage.setItem('venvis_session', SESSION_ID)
+      localStorage.setItem('venvis_user',    SESSION_USER)
+      sessionPicker.classList.add('hidden')
+    })
+  })
+}
+initSessionPicker()
+
+// ── CONNECTION STATUS ──
+socket.on('connect',    () => { connDot.className = 'conn-dot connected';    connDot.title = 'Conectado' })
+socket.on('disconnect', () => { connDot.className = 'conn-dot disconnected'; connDot.title = 'Desconectado — reconectando...' })
+socket.on('reconnect',  () => { connDot.className = 'conn-dot connected';    connDot.title = 'Conectado' })
 
 let audioEnabled = true
 let currentAudio = null
@@ -192,6 +218,10 @@ chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage() }
 })
 
+function msgTime() {
+  return new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
 function appendUserMessage(text, imageBase64) {
   const div = document.createElement('div')
   div.className = 'msg-user'
@@ -206,6 +236,10 @@ function appendUserMessage(text, imageBase64) {
     span.textContent = text
     div.appendChild(span)
   }
+  const ts = document.createElement('span')
+  ts.className = 'msg-timestamp'
+  ts.textContent = msgTime()
+  div.appendChild(ts)
   messages.appendChild(div)
   scrollBottom()
 }
@@ -240,6 +274,10 @@ socket.on('venvis_chunk', ({ text }) => {
 socket.on('venvis_done', ({ text }) => {
   if (pendingVenvisBubble) {
     pendingVenvisBubble.innerHTML = marked.parse(text)
+    const ts = document.createElement('span')
+    ts.className = 'msg-timestamp'
+    ts.textContent = msgTime()
+    pendingVenvisBubble.appendChild(ts)
     pendingVenvisBubble.dataset.raw = ''
     pendingVenvisBubble = null
   }
@@ -279,12 +317,19 @@ socket.on('venvis_error', ({ message }) => {
 })
 
 socket.on('venvis_proactive', ({ text, audioBase64 }) => {
-  // Show as a Venvis message even though user didn't ask
   const div = document.createElement('div')
   div.className = 'msg-venvis'
   div.innerHTML = marked.parse(text || '')
+  const ts = document.createElement('span')
+  ts.className = 'msg-timestamp'
+  ts.textContent = msgTime()
+  div.appendChild(ts)
   messages.appendChild(div)
   scrollBottom()
+
+  if (currentMode === 'voice') {
+    voiceTrans.textContent = text ? text.slice(0, 100) + (text.length > 100 ? '…' : '') : ''
+  }
 
   if (audioBase64 && audioEnabled) {
     stopCurrentAudio()

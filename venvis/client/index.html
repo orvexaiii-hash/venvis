@@ -12,8 +12,23 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- SESSION PICKER -->
+  <div class="session-picker" id="sessionPicker">
+    <div class="session-panel">
+      <div class="session-title">VENVIS</div>
+      <p class="session-subtitle">¿Quién sos?</p>
+      <div class="session-buttons">
+        <button class="session-btn" data-session="charly" data-name="Charly">Charly</button>
+        <button class="session-btn" data-session="agus" data-name="Agus">Agus</button>
+      </div>
+    </div>
+  </div>
+
   <header class="header">
-    <div class="header-title">VENVIS</div>
+    <div class="header-left">
+      <div class="conn-dot" id="connDot" title="Conectado"></div>
+      <div class="header-title">VENVIS</div>
+    </div>
     <div class="header-actions">
       <button id="btnMode"><span id="modeLabel">Voz</span></button>
       <button id="btnAudio" title="Silenciar audio">🔊</button>
