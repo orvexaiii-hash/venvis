@@ -20,8 +20,8 @@ let audioCtx      = null
 let analyser      = null
 let micStream     = null
 let bargeTimer    = null
-const BARGE_THRESHOLD = 18   // RMS 0-100 — subir si hay falsos positivos
-const BARGE_MS        = 120  // ms sostenidos para confirmar barge-in
+const BARGE_THRESHOLD = 30   // RMS 0-100 — subir si VENVIS se interrumpe solo
+const BARGE_MS        = 150  // ms sostenidos para confirmar barge-in
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -210,7 +210,10 @@ function startListeningLoop() {
 async function initVAD() {
   if (audioCtx) return
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+      video: false
+    })
     audioCtx  = new (window.AudioContext || window.webkitAudioContext)()
     analyser  = audioCtx.createAnalyser()
     analyser.fftSize = 512
@@ -242,13 +245,16 @@ function startBargeDetector() {
 }
 
 function handleBargeIn() {
-  ttsPlaying = false
   stopCurrentAudio()
   clearTimeout(sendTimer); sendTimer = null
-  accumulatedText = ''
   waitingForTTS = false
   setVoiceState('listening')
-  startListeningLoop()
+  // ttsPlaying sigue true 350ms para bloquear el eco del parlante antes de abrir el mic
+  setTimeout(() => {
+    ttsPlaying = false
+    accumulatedText = ''
+    if (conversationActive) startListeningLoop()
+  }, 350)
 }
 
 function stopConversation() {
