@@ -1,4 +1,4 @@
-// Push-only SW — no static caching to avoid stale files. v2
+// Push-only SW — no static caching to avoid stale files. v3
 
 self.addEventListener('install', () => {
   self.skipWaiting()
