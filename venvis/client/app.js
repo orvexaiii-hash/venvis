@@ -15,13 +15,6 @@ let waitingForTTS     = false
 let ttsPlaying        = false
 const SEND_DELAY_MS   = 1500
 
-// ── VAD para barge-in ──
-let audioCtx      = null
-let analyser      = null
-let micStream     = null
-let bargeTimer    = null
-const BARGE_THRESHOLD = 30   // RMS 0-100 — subir si VENVIS se interrumpe solo
-const BARGE_MS        = 150  // ms sostenidos para confirmar barge-in
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -207,54 +200,17 @@ function startListeningLoop() {
   try { recognition.start() } catch (_) {}
 }
 
-async function initVAD() {
-  if (audioCtx) return
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
-      video: false
-    })
-    audioCtx  = new (window.AudioContext || window.webkitAudioContext)()
-    analyser  = audioCtx.createAnalyser()
-    analyser.fftSize = 512
-    audioCtx.createMediaStreamSource(micStream).connect(analyser)
-  } catch (e) {
-    console.warn('[VAD] sin acceso al mic:', e)
-  }
-}
-
-function startBargeDetector() {
-  if (!analyser) return
-  clearInterval(bargeTimer)
-  const buf = new Uint8Array(analyser.frequencyBinCount)
-  let onsetMs = 0
-  const interval = 30
-  bargeTimer = setInterval(() => {
-    if (!ttsPlaying) { clearInterval(bargeTimer); bargeTimer = null; return }
-    analyser.getByteTimeDomainData(buf)
-    let sum = 0
-    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v }
-    const rms = Math.sqrt(sum / buf.length) * 100
-    if (rms >= BARGE_THRESHOLD) {
-      onsetMs += interval
-      if (onsetMs >= BARGE_MS) { clearInterval(bargeTimer); bargeTimer = null; handleBargeIn() }
-    } else {
-      onsetMs = 0
-    }
-  }, interval)
-}
-
-function handleBargeIn() {
+function handleInterrupt() {
   stopCurrentAudio()
   clearTimeout(sendTimer); sendTimer = null
   waitingForTTS = false
-  setVoiceState('listening')
-  // ttsPlaying sigue true 350ms para bloquear el eco del parlante antes de abrir el mic
+  btnInterrupt.classList.add('hidden')
+  // mantener ttsPlaying=true 400ms para que el eco del parlante no entre al mic
   setTimeout(() => {
     ttsPlaying = false
     accumulatedText = ''
     if (conversationActive) startListeningLoop()
-  }, 350)
+  }, 400)
 }
 
 function stopConversation() {
@@ -264,11 +220,11 @@ function stopConversation() {
   ttsPlaying = false
   clearTimeout(sendTimer)
   sendTimer = null
-  clearInterval(bargeTimer); bargeTimer = null
   try { recognition.abort() } catch (_) {}
   stopCurrentAudio()
   btnPTT.classList.remove('recording')
   btnPTT.textContent = '🎙'
+  btnInterrupt.classList.add('hidden')
   setVoiceState('idle')
 }
 
@@ -417,12 +373,14 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
   currentAudio = audio
-  if (currentMode === 'voice') { setVoiceState('speaking'); startBargeDetector() }
+  if (currentMode === 'voice') {
+    setVoiceState('speaking')
+    if (conversationActive) btnInterrupt.classList.remove('hidden')
+  }
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
     currentAudio = null
-    clearInterval(bargeTimer); bargeTimer = null
-    // esperar 500ms para que el sonido deje de resonar antes de abrir el mic
+    btnInterrupt.classList.add('hidden')
     setTimeout(() => {
       ttsPlaying = false
       if (currentMode === 'voice') resumeConversation()
@@ -489,9 +447,10 @@ socket.on('venvis_proactive', ({ text, audioBase64 }) => {
 })
 
 // ── VOZ: botón de conversación continua ──
-btnPTT.addEventListener('click', async () => {
+const btnInterrupt = document.getElementById('btnInterrupt')
+
+btnPTT.addEventListener('click', () => {
   if (!conversationActive) {
-    await initVAD()
     conversationActive = true
     btnPTT.textContent = '⏹'
     startListeningLoop()
@@ -500,6 +459,9 @@ btnPTT.addEventListener('click', async () => {
   }
 })
 btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); btnPTT.click() }, { passive: false })
+
+btnInterrupt.addEventListener('click', handleInterrupt)
+btnInterrupt.addEventListener('touchstart', (e) => { e.preventDefault(); handleInterrupt() }, { passive: false })
 
 // ── MEMORIA ──
 btnMemory.addEventListener('click', async () => {
