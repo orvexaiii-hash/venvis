@@ -415,8 +415,12 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
     currentAudio = null
-    ttsPlaying = false
-    if (currentMode === 'voice') resumeConversation()
+    clearInterval(bargeTimer); bargeTimer = null
+    // esperar 500ms para que el sonido deje de resonar antes de abrir el mic
+    setTimeout(() => {
+      ttsPlaying = false
+      if (currentMode === 'voice') resumeConversation()
+    }, 500)
   })
   audio.play().catch(() => {
     ttsPlaying = false
