@@ -12,8 +12,16 @@ let accumulatedText   = ''
 let conversationActive = false
 let sendTimer         = null
 let waitingForTTS     = false
-let ttsPlaying        = false  // bloquea STT mientras VENVIS habla
-const SEND_DELAY_MS   = 1500   // ms de silencio antes de enviar
+let ttsPlaying        = false
+const SEND_DELAY_MS   = 1500
+
+// ── VAD para barge-in ──
+let audioCtx      = null
+let analyser      = null
+let micStream     = null
+let bargeTimer    = null
+const BARGE_THRESHOLD = 18   // RMS 0-100 — subir si hay falsos positivos
+const BARGE_MS        = 120  // ms sostenidos para confirmar barge-in
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -199,12 +207,58 @@ function startListeningLoop() {
   try { recognition.start() } catch (_) {}
 }
 
+async function initVAD() {
+  if (audioCtx) return
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    audioCtx  = new (window.AudioContext || window.webkitAudioContext)()
+    analyser  = audioCtx.createAnalyser()
+    analyser.fftSize = 512
+    audioCtx.createMediaStreamSource(micStream).connect(analyser)
+  } catch (e) {
+    console.warn('[VAD] sin acceso al mic:', e)
+  }
+}
+
+function startBargeDetector() {
+  if (!analyser) return
+  clearInterval(bargeTimer)
+  const buf = new Uint8Array(analyser.frequencyBinCount)
+  let onsetMs = 0
+  const interval = 30
+  bargeTimer = setInterval(() => {
+    if (!ttsPlaying) { clearInterval(bargeTimer); bargeTimer = null; return }
+    analyser.getByteTimeDomainData(buf)
+    let sum = 0
+    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v }
+    const rms = Math.sqrt(sum / buf.length) * 100
+    if (rms >= BARGE_THRESHOLD) {
+      onsetMs += interval
+      if (onsetMs >= BARGE_MS) { clearInterval(bargeTimer); bargeTimer = null; handleBargeIn() }
+    } else {
+      onsetMs = 0
+    }
+  }, interval)
+}
+
+function handleBargeIn() {
+  ttsPlaying = false
+  stopCurrentAudio()
+  clearTimeout(sendTimer); sendTimer = null
+  accumulatedText = ''
+  waitingForTTS = false
+  setVoiceState('listening')
+  startListeningLoop()
+}
+
 function stopConversation() {
   conversationActive = false
   isRecording = false
   waitingForTTS = false
+  ttsPlaying = false
   clearTimeout(sendTimer)
   sendTimer = null
+  clearInterval(bargeTimer); bargeTimer = null
   try { recognition.abort() } catch (_) {}
   stopCurrentAudio()
   btnPTT.classList.remove('recording')
@@ -357,7 +411,7 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
   currentAudio = audio
-  if (currentMode === 'voice') setVoiceState('speaking')
+  if (currentMode === 'voice') { setVoiceState('speaking'); startBargeDetector() }
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
     currentAudio = null
@@ -425,8 +479,9 @@ socket.on('venvis_proactive', ({ text, audioBase64 }) => {
 })
 
 // ── VOZ: botón de conversación continua ──
-btnPTT.addEventListener('click', () => {
+btnPTT.addEventListener('click', async () => {
   if (!conversationActive) {
+    await initVAD()
     conversationActive = true
     btnPTT.textContent = '⏹'
     startListeningLoop()
