@@ -1,24 +1,17 @@
-const CACHE = 'venvis-v3'
-const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icon.svg']
+// Push-only SW — no static caching to avoid stale files
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)))
+self.addEventListener('install', () => {
   self.skipWaiting()
 })
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    )
+    caches.keys()
+      .then(keys => Promise.all(keys.map(k => caches.delete(k))))
+      .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .then(clients => clients.forEach(c => c.navigate(c.url)))
   )
   self.clients.claim()
-})
-
-self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET') return
-  if (e.request.url.includes('/api/') || e.request.url.includes('socket.io')) return
-  e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)))
 })
 
 self.addEventListener('push', (e) => {
