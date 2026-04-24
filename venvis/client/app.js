@@ -330,15 +330,21 @@ socket.on('venvis_done', ({ text }) => {
   chatInput.disabled = false
   chatInput.focus()
   scrollBottom()
-  // si es modo voz y no hay audio (TTS desactivado o falló), reanudar igual
-  if (currentMode === 'voice' && waitingForTTS && !currentAudio) {
-    setTimeout(resumeConversation, 300)
+  // venvis_audio llega separado y maneja el reinicio; si no llega en 4s, reanudar igual
+  if (currentMode === 'voice' && waitingForTTS) {
+    setTimeout(() => { if (waitingForTTS) resumeConversation() }, 4000)
   }
 })
 
 socket.on('venvis_audio', ({ audioBase64 }) => {
+  // detener reconocimiento ANTES de reproducir — evita que se escuche a sí mismo
+  isRecording = false
+  clearTimeout(sendTimer)
+  sendTimer = null
+  accumulatedText = ''
+  try { recognition.abort() } catch (_) {}
+
   if (!audioEnabled) {
-    // sin audio — reanudar conversación igual
     if (currentMode === 'voice') resumeConversation()
     return
   }
@@ -354,7 +360,7 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
     currentAudio = null
     if (currentMode === 'voice') resumeConversation()
   })
-  audio.play().catch(() => resumeConversation())
+  audio.play().catch(() => { if (currentMode === 'voice') resumeConversation() })
 })
 
 function resumeConversation() {
