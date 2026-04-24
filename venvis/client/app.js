@@ -4,12 +4,11 @@ const socket = io()
 let SESSION_ID   = localStorage.getItem('venvis_session') || null
 let SESSION_USER = localStorage.getItem('venvis_user')   || null
 
-let currentMode = 'chat'
-let isRecording = false
-let recognition = null
+let currentMode  = 'chat'
+let isRecording  = false
+let recognition  = null
 let pendingVenvisBubble = null
-let pttHeld     = false
-let pttGotResult = false
+let accumulatedText = ''
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -128,23 +127,25 @@ function initSpeechRecognition() {
   }
   recognition = new SpeechRecognitionAPI()
   recognition.lang = 'es-AR'
-  recognition.continuous = false
-  recognition.interimResults = false
+  recognition.continuous = true
+  recognition.interimResults = true
 
   recognition.onstart = () => {
     isRecording = true
+    accumulatedText = ''
     btnPTT.classList.add('recording')
     setVoiceState('listening')
     voiceTrans.textContent = ''
   }
 
   recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript.trim()
-    if (!text) return
-    pttGotResult = true
-    voiceTrans.textContent = `Vos: ${text}`
-    setVoiceState('processing')
-    socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
+    let interim = ''
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript
+      if (e.results[i].isFinal) accumulatedText += t + ' '
+      else interim = t
+    }
+    voiceTrans.textContent = `Vos: ${(accumulatedText + interim).trim()}`
   }
 
   recognition.onerror = (e) => {
@@ -152,21 +153,22 @@ function initSpeechRecognition() {
     if (e.error === 'not-allowed') {
       voiceStatusText.textContent = 'Permiso de micrófono denegado'
       voiceStatus.className = 'voice-status'
-      isRecording = false
-      btnPTT.classList.remove('recording')
-    }
-    // otros errores (network, no-speech): onend se encarga
-  }
-
-  recognition.onend = () => {
-    // si el botón sigue presionado y aún no hubo resultado, reiniciar
-    if (pttHeld && !pttGotResult) {
-      try { recognition.start() } catch (_) {}
-      return
     }
     isRecording = false
     btnPTT.classList.remove('recording')
-    if (voiceStatus.classList.contains('listening')) setVoiceState('idle')
+    setVoiceState('idle')
+  }
+
+  recognition.onend = () => {
+    isRecording = false
+    btnPTT.classList.remove('recording')
+    const text = accumulatedText.trim()
+    if (text) {
+      setVoiceState('processing')
+      socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
+    } else {
+      setVoiceState('idle')
+    }
   }
 }
 
@@ -371,11 +373,11 @@ function stopListening() {
   recognition.stop()
 }
 
-btnPTT.addEventListener('mousedown', () => { pttHeld = true; pttGotResult = false; startListening() })
-btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); pttHeld = true; pttGotResult = false; startListening() }, { passive: false })
-btnPTT.addEventListener('mouseup', () => { pttHeld = false; stopListening() })
-btnPTT.addEventListener('touchend', (e) => { e.preventDefault(); pttHeld = false; stopListening() }, { passive: false })
-btnPTT.addEventListener('mouseleave', () => { pttHeld = false; stopListening() })
+btnPTT.addEventListener('click', () => {
+  if (!isRecording) startListening()
+  else stopListening()
+})
+btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); btnPTT.click() }, { passive: false })
 
 // ── MEMORIA ──
 btnMemory.addEventListener('click', async () => {
