@@ -1,51 +1,44 @@
 import pyaudio
 import numpy as np
-import openwakeword
-from openwakeword.model import Model
 import socketio
 import speech_recognition as sr
 import asyncio
-import time
 import tempfile
 import os
 import threading
 import ctypes
+import wave
 
 # ── CONFIG ──────────────────────────────────────────────
 SERVER_URL  = "https://venvis.orvexautomation.com"
 SESSION_ID  = "charly"
-WAKE_MODEL  = "hey_jarvis"
-THRESHOLD   = 0.5
-TRIGGER_HITS = 2   # chunks consecutivos por encima del umbral para activar
+WAKE_WORDS  = {"jarvis", "venvis", "oye jarvis", "hey jarvis", "hey venvis"}
+
 SAMPLE_RATE = 16000
-CHUNK       = 1280   # 80ms @ 16kHz
+CHUNK       = 1024
 
 VOICE       = "es-AR-TomasNeural"
 TTS_RATE    = "-5%"
 TTS_PITCH   = "-2Hz"
 
-STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
+VAD_THRESHOLD  = 400   # energía mínima para detectar voz
+VAD_ONSET      = 3     # chunks seguidos con voz para empezar a grabar
+SILENCE_CHUNKS = 15    # chunks de silencio para cortar la grabación
+MAX_CHUNKS     = 200   # máximo de grabación (~13s)
 
-SILENCE_THRESHOLD = 500   # energía mínima para considerar voz
-SILENCE_SECS      = 0.7   # segundos de silencio para cortar
-WAIT_SECS         = 3     # máximo esperando que empiece a hablar
-MAX_RECORD_SECS   = 12
+STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
 # ────────────────────────────────────────────────────────
 
 sio        = socketio.Client(logger=False, engineio_logger=False)
 recognizer = sr.Recognizer()
-
-print("Descargando/verificando modelo wake word...")
-openwakeword.utils.download_models([WAKE_MODEL])
-print("Cargando modelo wake word...")
-oww = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx")
-print("Modelo listo.")
+recognizer.energy_threshold = 300
+recognizer.dynamic_energy_threshold = False
+is_speaking = False  # True mientras VENVIS habla, para no captar el TTS
 
 
 # ── AUDIO PLAYBACK ───────────────────────────────────────
 
 def _play_mp3_winmm(path):
-    """Reproduce MP3 usando Windows MCI (sin dependencias externas)."""
     mci = ctypes.windll.winmm
     alias = "venvis_mp3"
     abs_path = os.path.abspath(path).replace("/", "\\")
@@ -78,7 +71,8 @@ async def _tts_async(text):
 
 
 def speak(text):
-    """Genera y reproduce TTS localmente usando edge-tts."""
+    global is_speaking
+    is_speaking = True
     tmp = None
     try:
         tmp = asyncio.run(_tts_async(text))
@@ -91,6 +85,7 @@ def speak(text):
                 os.unlink(tmp)
             except Exception:
                 pass
+        is_speaking = False
 
 
 # ── SOCKET EVENTS ────────────────────────────────────────
@@ -114,60 +109,81 @@ def on_done(data):
     threading.Thread(target=speak, args=(text,), daemon=True).start()
     print('Escuchando... (decí "hey jarvis")')
 
-@sio.on("venvis_audio")
-def on_audio(data):
-    pass  # TTS se hace localmente ahora
-
 @sio.on("venvis_error")
 def on_error(data):
     print(f"[Error] {data.get('message', '')}")
 
 
-# ── GRABACIÓN Y STT ──────────────────────────────────────
+# ── GRABACIÓN CON VAD ─────────────────────────────────────
 
-def record_until_silence(stream):
-    """Graba desde el stream existente usando VAD por energía."""
-    frames = []
-    silence_chunks = 0
-    max_silence    = int(SILENCE_SECS * SAMPLE_RATE / CHUNK)
-    max_wait       = int(WAIT_SECS * SAMPLE_RATE / CHUNK)
-    max_total      = int(MAX_RECORD_SECS * SAMPLE_RATE / CHUNK)
-    speech_started = False
+def record_until_silence(stream, first_frame=None):
+    """Graba desde que hay voz hasta el silencio. Retorna bytes de audio."""
+    frames = [first_frame] if first_frame else []
+    silence = 0
 
-    for _ in range(max_wait):
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        energy = np.abs(np.frombuffer(data, dtype=np.int16)).mean()
-        if energy > SILENCE_THRESHOLD:
-            speech_started = True
-            frames.append(data)
-            break
-
-    if not speech_started:
-        return None
-
-    for _ in range(max_total):
-        data = stream.read(CHUNK, exception_on_overflow=False)
+    for _ in range(MAX_CHUNKS):
+        data  = stream.read(CHUNK, exception_on_overflow=False)
+        chunk = np.frombuffer(data, dtype=np.int16)
+        energy = int(np.abs(chunk).mean())
         frames.append(data)
-        energy = np.abs(np.frombuffer(data, dtype=np.int16)).mean()
-        if energy < SILENCE_THRESHOLD:
-            silence_chunks += 1
-            if silence_chunks >= max_silence:
+
+        if energy < VAD_THRESHOLD:
+            silence += 1
+            if silence >= SILENCE_CHUNKS:
                 break
         else:
-            silence_chunks = 0
+            silence = 0
 
-    return b''.join(frames)
+    return b''.join(frames) if frames else None
 
 
-def transcribe(audio_bytes):
-    """Envía audio a Google STT y retorna el texto."""
+def transcribe(audio_bytes, lang="es-AR"):
     audio_data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
     try:
-        return recognizer.recognize_google(audio_data, language="es-AR")
+        return recognizer.recognize_google(audio_data, language=lang)
     except sr.UnknownValueError:
         return None
     except sr.RequestError as e:
-        print(f"[STT] Error de red: {e}")
+        print(f"[STT] Error: {e}")
+        return None
+
+
+def transcribe_wake(audio_bytes):
+    """Intenta en inglés primero (hey jarvis), luego español."""
+    text = transcribe(audio_bytes, lang="en-US")
+    if text:
+        return text
+    return transcribe(audio_bytes, lang="es-AR")
+
+
+def contains_wake_word(text):
+    t = text.lower()
+    return any(w in t for w in WAKE_WORDS)
+
+
+# ── SELECCIÓN DE MICRÓFONO ───────────────────────────────
+
+def pick_microphone(pa):
+    mics = []
+    for i in range(pa.get_device_count()):
+        d = pa.get_device_info_by_index(i)
+        if d['maxInputChannels'] > 0 and d['hostApi'] == 0:
+            mics.append((i, d['name']))
+
+    print("\nMicrófonos disponibles:")
+    for idx, (i, name) in enumerate(mics):
+        print(f"  [{idx}] {name}")
+
+    default_name = pa.get_default_input_device_info()['name']
+    print(f"\nDefault: {default_name}")
+    print("Enter = usar default, o escribí el número:")
+    choice = input("> ").strip()
+
+    if choice == "":
+        return None
+    try:
+        return mics[int(choice)][0]
+    except (ValueError, IndexError):
         return None
 
 
@@ -181,61 +197,75 @@ def main():
         print(f"Error de conexión: {e}")
         return
 
-    pa     = pyaudio.PyAudio()
-    stream = pa.open(rate=SAMPLE_RATE, channels=1,
+    pa        = pyaudio.PyAudio()
+    mic_index = pick_microphone(pa)
+
+    open_args = dict(rate=SAMPLE_RATE, channels=1,
                      format=pyaudio.paInt16,
                      input=True, frames_per_buffer=CHUNK)
+    if mic_index is not None:
+        open_args['input_device_index'] = mic_index
+        name = pa.get_device_info_by_index(mic_index)['name']
+    else:
+        name = pa.get_default_input_device_info()['name']
+    print(f"Micrófono: {name}\n")
 
-    print('Escuchando... (decí "hey jarvis" para activar)\n')
+    stream = pa.open(**open_args)
 
-    hits = 0
+    print('Escuchando... (decí "hey jarvis" o "venvis")\n')
+
+    onset = 0
     try:
         while True:
-            chunk = np.frombuffer(
-                stream.read(CHUNK, exception_on_overflow=False),
-                dtype=np.int16
-            )
-            pred  = oww.predict(chunk)
-            score = list(pred.values())[0] if pred else 0.0
+            # Escuchar hasta detectar voz sostenida
+            data   = stream.read(CHUNK, exception_on_overflow=False)
+            chunk  = np.frombuffer(data, dtype=np.int16)
+            energy = int(np.abs(chunk).mean())
 
-            if score > 0.2:
-                print(f"  score: {score:.3f}", end="\r")
+            if is_speaking:
+                onset = 0
+                continue
 
-            if score >= THRESHOLD:
-                hits += 1
+            print(f"  vol: {energy:<6}", end="\r")
+
+            if energy >= VAD_THRESHOLD:
+                onset += 1
             else:
-                hits = 0
+                onset = 0
 
-            if hits < TRIGGER_HITS:
+            if onset < VAD_ONSET:
                 continue
 
-            hits = 0
-            print(f"\n[Wake word! score={score:.2f}]")
-            oww.reset()
-            play_beep()
+            onset = 0
+            print("  [grabando...]         ", end="\r")
 
-            print("Escuchando tu mensaje...")
-            audio_bytes = record_until_silence(stream)
-
+            # Grabar hasta silencio
+            audio_bytes = record_until_silence(stream, first_frame=data)
             if not audio_bytes:
-                print("No se detectó voz.")
-                print('Escuchando... (decí "hey jarvis")')
                 continue
 
-            print("Transcribiendo...")
-            text = transcribe(audio_bytes)
+            print("  transcribiendo...     ", end="\r")
+            text = transcribe(audio_bytes, lang="es-AR") or transcribe(audio_bytes, lang="en-US")
 
             if not text:
-                print("No se entendió.")
-                print('Escuchando... (decí "hey jarvis")')
+                print("  (no se entendió)      ", end="\r")
                 continue
 
-            print(f"Vos: {text}")
+            print(f"  oído: '{text}'          ")
 
-            if any(w in text.lower() for w in STOP_WORDS):
+            tl = text.lower()
+
+            if any(w in tl for w in STOP_WORDS):
                 print("Hasta luego.")
                 break
 
+            # Ignorar frases muy cortas o de ruido
+            words = [w for w in tl.split() if len(w) > 2]
+            if len(words) < 1:
+                continue
+
+            print(f"Vos: {text}")
+            play_beep()
             sio.emit("user_message", {"text": text, "sessionId": SESSION_ID, "voiceMode": True})
 
     except KeyboardInterrupt:
