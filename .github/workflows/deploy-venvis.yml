@@ -22,9 +22,7 @@ jobs:
             set -e
             cd /var/www/venvis/venvis
             git pull origin master
-            echo "=== VPS structure ===" && ls -la && echo "=== venvis subdir? ===" && ls venvis/ 2>/dev/null || true
             VENVIS_DIR=$([ -f venvis/Dockerfile ] && echo "./venvis" || echo ".")
-            echo "Building from: $VENVIS_DIR"
             docker build --no-cache -t venvis:latest $VENVIS_DIR
-            docker service update --image venvis:latest venvis_venvis
+            docker service update --force --image venvis:latest venvis_venvis
             echo "✓ VENVIS deployed at $(date)"
