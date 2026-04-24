@@ -13,7 +13,7 @@ import ctypes
 
 # ── CONFIG ──────────────────────────────────────────────
 SERVER_URL  = "https://venvis.orvexautomation.com"
-SESSION_ID  = "agus"
+SESSION_ID  = "charly"
 WAKE_MODEL  = "hey_jarvis"
 THRESHOLD   = 0.5
 TRIGGER_HITS = 2   # chunks consecutivos por encima del umbral para activar
