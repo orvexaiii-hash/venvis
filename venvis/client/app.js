@@ -12,6 +12,7 @@ let accumulatedText   = ''
 let conversationActive = false
 let sendTimer         = null
 let waitingForTTS     = false
+let ttsPlaying        = false  // bloquea STT mientras VENVIS habla
 const SEND_DELAY_MS   = 1500   // ms de silencio antes de enviar
 
 const chatView        = document.getElementById('chatView')
@@ -141,6 +142,7 @@ function initSpeechRecognition() {
   }
 
   recognition.onresult = (e) => {
+    if (ttsPlaying) return   // descartar todo lo que escucha mientras VENVIS habla
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript
@@ -337,14 +339,15 @@ socket.on('venvis_done', ({ text }) => {
 })
 
 socket.on('venvis_audio', ({ audioBase64 }) => {
-  // detener reconocimiento ANTES de reproducir — evita que se escuche a sí mismo
-  isRecording = false
+  ttsPlaying = true       // bloquear STT antes de que suene nada
   clearTimeout(sendTimer)
   sendTimer = null
   accumulatedText = ''
+  isRecording = false
   try { recognition.abort() } catch (_) {}
 
   if (!audioEnabled) {
+    ttsPlaying = false
     if (currentMode === 'voice') resumeConversation()
     return
   }
@@ -358,9 +361,13 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
     currentAudio = null
+    ttsPlaying = false
     if (currentMode === 'voice') resumeConversation()
   })
-  audio.play().catch(() => { if (currentMode === 'voice') resumeConversation() })
+  audio.play().catch(() => {
+    ttsPlaying = false
+    if (currentMode === 'voice') resumeConversation()
+  })
 })
 
 function resumeConversation() {
