@@ -104,8 +104,9 @@ function needsSearch(text) {
 
 function buildSystemPrompt(memoryItems, voiceMode = false, userName = 'el usuario') {
   const now     = new Date()
-  const dateStr = now.toLocaleDateString('es-AR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-  const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+  const TZ      = 'America/Argentina/Buenos_Aires'
+  const dateStr = now.toLocaleDateString('es-AR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: TZ })
+  const timeStr = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ })
 
   const memLines = memoryItems.length
     ? memoryItems.map(m => `- ${m.key}: ${m.value}`).join('\n')

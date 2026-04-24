@@ -41,6 +41,7 @@ TTS_ALIAS = "venvis_tts"
 _lock     = threading.Lock()
 _speaking = False      # True mientras TTS reproduce
 _tts_file = None       # path del mp3 en reproducción
+_tts_gen  = 0          # generation counter — evita race condition en barge-in
 
 
 def is_speaking():
@@ -99,6 +100,10 @@ async def _tts_async(text):
 
 def speak(text):
     """Genera y reproduce TTS en hilo separado. Interrumpible."""
+    global _tts_gen
+    _tts_gen += 1
+    my_gen = _tts_gen
+
     def _run():
         tmp = None
         try:
@@ -108,7 +113,8 @@ def speak(text):
         except Exception as e:
             print(f"[TTS] {e}")
         finally:
-            stop_tts()
+            if _tts_gen == my_gen:  # solo si no arrancó otro TTS después
+                stop_tts()
 
     threading.Thread(target=_run, daemon=True).start()
 

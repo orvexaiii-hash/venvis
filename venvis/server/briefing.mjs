@@ -10,8 +10,10 @@ function greetingByHour(hour) {
   return 'Buenas noches'
 }
 
+const TZ = 'America/Argentina/Buenos_Aires'
+
 function formatTime(date) {
-  return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ })
 }
 
 const WEATHER_TRANSLATIONS = {
@@ -52,7 +54,7 @@ async function getNewsHeadline() {
 
 export async function generateBriefing() {
   const now     = new Date()
-  const hour    = now.getHours()
+  const hour    = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: TZ }), 10)
   const name    = SESSION_NAME.charAt(0).toUpperCase() + SESSION_NAME.slice(1)
   const parts   = [`${greetingByHour(hour)}, ${name}. Son las ${formatTime(now)}.`]
 

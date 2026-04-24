@@ -26,10 +26,11 @@ export function startReminders(onReminder, onDailyBriefing) {
   let lastBriefingDate = ''   // YYYY-MM-DD of last daily summary sent
 
   function tick() {
-    const now  = new Date()
-    const hour = now.getHours()
-    const min  = now.getMinutes()
-    const today = now.toISOString().slice(0, 10)
+    const now   = new Date()
+    const TZ    = 'America/Argentina/Buenos_Aires'
+    const hour  = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: TZ }), 10)
+    const min   = parseInt(now.toLocaleString('en-US', { minute: 'numeric', timeZone: TZ }), 10)
+    const today = now.toLocaleDateString('en-CA', { timeZone: TZ })
 
     // Daily briefings — fire once per day at exact hour
     if ((hour === 8 || hour === 22) && min === 0 && lastBriefingDate !== `${today}-${hour}`) {
