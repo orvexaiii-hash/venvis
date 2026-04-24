@@ -28,7 +28,7 @@ export async function textToSpeech(text) {
 
   const ssml = buildSSML(cleanText)
   const ssmlArgs  = ['--ssml', ssml, '--write-media', outputPath]
-  const plainArgs = ['--voice', VOICE, '--rate', '-5%', '--pitch', '-2Hz',
+  const plainArgs = ['--voice', VOICE, '--rate=-5%', '--pitch=-2Hz',
                      '--text', cleanText, '--write-media', outputPath]
 
   async function runTTS(args) {
