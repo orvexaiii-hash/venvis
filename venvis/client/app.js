@@ -126,7 +126,7 @@ function initSpeechRecognition() {
     return
   }
   recognition = new SpeechRecognitionAPI()
-  recognition.lang = 'es-AR'
+  recognition.lang = 'es'
   recognition.continuous = true
   recognition.interimResults = true
 
