@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""VENVIS Voice Client — siempre activo, barge-in, conversación fluida."""
+
 import pyaudio
 import numpy as np
 import socketio
@@ -7,286 +10,342 @@ import tempfile
 import os
 import threading
 import ctypes
-import wave
+import time
+from collections import deque
 
 # ── CONFIG ──────────────────────────────────────────────
 SERVER_URL  = "https://venvis.orvexautomation.com"
 SESSION_ID  = "charly"
-WAKE_WORDS  = {"jarvis", "venvis", "oye jarvis", "hey jarvis", "hey venvis"}
-
 SAMPLE_RATE = 16000
-CHUNK       = 1024
+CHUNK       = 512          # 32ms por chunk — respuesta rápida
 
 VOICE       = "es-AR-TomasNeural"
 TTS_RATE    = "-5%"
 TTS_PITCH   = "-2Hz"
 
-VAD_THRESHOLD  = 400   # energía mínima para detectar voz
-VAD_ONSET      = 3     # chunks seguidos con voz para empezar a grabar
-SILENCE_CHUNKS = 15    # chunks de silencio para cortar la grabación
-MAX_CHUNKS     = 200   # máximo de grabación (~13s)
+# VAD
+ENERGY_TH      = 280       # umbral de energía (bajar si no detecta)
+ONSET_CHUNKS   = 4         # ~128ms sostenidos para empezar a grabar
+SILENCE_CHUNKS = 14        # ~450ms de silencio para cortar
+BARGE_CHUNKS   = 5         # ~160ms de voz para interrumpir TTS
+PRE_BUFFER     = 12        # chunks guardados antes del onset (no perder inicio)
+MIN_FRAMES     = 6         # mínimo de frames para enviar (~192ms)
 
-STOP_WORDS  = {"detente venvis", "para venvis", "apagar venvis", "cerrar venvis"}
+STOP_PHRASES   = {"detente venvis", "cerrar venvis", "apagar venvis"}
 # ────────────────────────────────────────────────────────
 
-sio        = socketio.Client(logger=False, engineio_logger=False)
-recognizer = sr.Recognizer()
-recognizer.energy_threshold = 300
-recognizer.dynamic_energy_threshold = False
-is_speaking = False  # True mientras VENVIS habla, para no captar el TTS
+mci       = ctypes.windll.winmm
+TTS_ALIAS = "venvis_tts"
+
+# ── ESTADO GLOBAL ────────────────────────────────────────
+_lock     = threading.Lock()
+_speaking = False      # True mientras TTS reproduce
+_tts_file = None       # path del mp3 en reproducción
 
 
-# ── AUDIO PLAYBACK ───────────────────────────────────────
+def is_speaking():
+    with _lock:
+        return _speaking
 
-def _play_mp3_winmm(path):
-    mci = ctypes.windll.winmm
-    alias = "venvis_mp3"
+
+def set_speaking(val, path=None):
+    global _speaking, _tts_file
+    with _lock:
+        _speaking = val
+        if path is not None:
+            _tts_file = path
+
+
+# ── TTS ──────────────────────────────────────────────────
+
+def stop_tts():
+    global _tts_file
+    mci.mciSendStringW(f'stop {TTS_ALIAS}',  None, 0, None)
+    mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
+    with _lock:
+        f = _tts_file
+        _tts_file = None
+    if f and os.path.exists(f):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+    set_speaking(False)
+
+
+def _play_mp3(path):
+    """Bloquea hasta que termina o stop_tts() lo interrumpe."""
     abs_path = os.path.abspath(path).replace("/", "\\")
-    mci.mciSendStringW(f'close {alias}', None, 0, None)
-    err = mci.mciSendStringW(f'open "{abs_path}" type mpegvideo alias {alias}', None, 0, None)
+    mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
+    err = mci.mciSendStringW(
+        f'open "{abs_path}" type mpegvideo alias {TTS_ALIAS}',
+        None, 0, None
+    )
     if err:
-        raise RuntimeError(f"MCI open error: {err}")
-    mci.mciSendStringW(f'play {alias} wait', None, 0, None)
-    mci.mciSendStringW(f'close {alias}', None, 0, None)
+        return
+    mci.mciSendStringW(f'play {TTS_ALIAS} wait', None, 0, None)
+    mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
 
-
-def play_beep():
-    try:
-        import winsound
-        winsound.Beep(880, 120)
-    except Exception:
-        pass
-
-
-# ── TTS LOCAL ────────────────────────────────────────────
 
 async def _tts_async(text):
     import edge_tts
-    clean = text.replace('\n', ' ').strip()[:500]
-    communicate = edge_tts.Communicate(clean, VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+    clean = text.replace('\n', ' ').strip()[:600]
+    comm  = edge_tts.Communicate(clean, VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
     with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
         tmp = f.name
-    await communicate.save(tmp)
+    await comm.save(tmp)
     return tmp
 
 
 def speak(text):
-    global is_speaking
-    is_speaking = True
-    tmp = None
+    """Genera y reproduce TTS en hilo separado. Interrumpible."""
+    def _run():
+        tmp = None
+        try:
+            tmp = asyncio.run(_tts_async(text))
+            set_speaking(True, path=tmp)
+            _play_mp3(tmp)
+        except Exception as e:
+            print(f"[TTS] {e}")
+        finally:
+            stop_tts()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def beep(freq=800, ms=80):
     try:
-        tmp = asyncio.run(_tts_async(text))
-        _play_mp3_winmm(tmp)
-    except Exception as e:
-        print(f"[TTS] Error: {e}")
-    finally:
-        if tmp and os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
-        is_speaking = False
+        import winsound
+        winsound.Beep(freq, ms)
+    except Exception:
+        pass
 
 
-# ── SOCKET EVENTS ────────────────────────────────────────
+# ── SOCKET.IO ────────────────────────────────────────────
+
+sio = socketio.Client(
+    logger=False, engineio_logger=False,
+    reconnection=True, reconnection_attempts=0, reconnection_delay=2
+)
+
 
 @sio.on("connect")
-def on_connect():
-    print(f"Conectado a {SERVER_URL}")
+def _on_connect():
+    print("  [conectado]            ")
+
 
 @sio.on("disconnect")
-def on_disconnect():
-    print("\n[reconectando...]")
+def _on_disconnect():
+    print("  [reconectando...]      ")
 
-@sio.on("venvis_chunk")
-def on_chunk(data):
-    pass
 
 @sio.on("venvis_done")
-def on_done(data):
-    text = data.get('text', '')
+def _on_done(data):
+    text = (data.get('text') or '').strip()
+    if not text:
+        return
     print(f"\nVENVIS: {text}\n")
-    threading.Thread(target=speak, args=(text,), daemon=True).start()
-    print('Escuchando... (decí "hey jarvis")')
+    speak(text)
+
 
 @sio.on("venvis_error")
-def on_error(data):
+def _on_error(data):
     print(f"[Error] {data.get('message', '')}")
 
 
-# ── GRABACIÓN CON VAD ─────────────────────────────────────
-
-def record_until_silence(stream, first_frame=None):
-    """Graba desde que hay voz hasta el silencio. Retorna bytes de audio."""
-    frames = [first_frame] if first_frame else []
-    silence = 0
-
-    for _ in range(MAX_CHUNKS):
-        data  = stream.read(CHUNK, exception_on_overflow=False)
-        chunk = np.frombuffer(data, dtype=np.int16)
-        energy = int(np.abs(chunk).mean())
-        frames.append(data)
-
-        if energy < VAD_THRESHOLD:
-            silence += 1
-            if silence >= SILENCE_CHUNKS:
-                break
-        else:
-            silence = 0
-
-    return b''.join(frames) if frames else None
-
-
-def transcribe(audio_bytes, lang="es-AR"):
-    audio_data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
-    try:
-        return recognizer.recognize_google(audio_data, language=lang)
-    except sr.UnknownValueError:
-        return None
-    except sr.RequestError as e:
-        print(f"[STT] Error: {e}")
-        return None
-
-
-def transcribe_wake(audio_bytes):
-    """Intenta en inglés primero (hey jarvis), luego español."""
-    text = transcribe(audio_bytes, lang="en-US")
-    if text:
-        return text
-    return transcribe(audio_bytes, lang="es-AR")
-
-
-def contains_wake_word(text):
-    t = text.lower()
-    return any(w in t for w in WAKE_WORDS)
-
-
-# ── SELECCIÓN DE MICRÓFONO ───────────────────────────────
-
-def pick_microphone(pa):
-    mics = []
-    for i in range(pa.get_device_count()):
-        d = pa.get_device_info_by_index(i)
-        if d['maxInputChannels'] > 0 and d['hostApi'] == 0:
-            mics.append((i, d['name']))
-
-    print("\nMicrófonos disponibles:")
-    for idx, (i, name) in enumerate(mics):
-        print(f"  [{idx}] {name}")
-
-    default_name = pa.get_default_input_device_info()['name']
-    print(f"\nDefault: {default_name}")
-    print("Enter = usar default, o escribí el número:")
-    choice = input("> ").strip()
-
-    if choice == "":
-        return None
-    try:
-        return mics[int(choice)][0]
-    except (ValueError, IndexError):
-        return None
-
-
-# ── MAIN ─────────────────────────────────────────────────
-
-def connect_with_retry():
-    """Conecta al servidor, reintentando hasta lograrlo."""
+def connect_loop():
     while True:
         try:
             if not sio.connected:
                 sio.connect(SERVER_URL, transports=["websocket"])
-            return True
+            return
         except Exception as e:
-            print(f"  [sin conexión, reintentando en 3s...] {e}")
-            import time; time.sleep(3)
+            print(f"  [sin conexión: {e}  reintentando en 3s...]")
+            time.sleep(3)
 
+
+# ── STT ──────────────────────────────────────────────────
+
+recognizer = sr.Recognizer()
+recognizer.energy_threshold    = 300
+recognizer.dynamic_energy_threshold = False
+
+
+def transcribe(audio_bytes):
+    data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
+    for lang in ("es-AR", "en-US"):
+        try:
+            return recognizer.recognize_google(data, language=lang)
+        except sr.UnknownValueError:
+            continue
+        except sr.RequestError as e:
+            print(f"[STT] {e}")
+            return None
+    return None
+
+
+# ── MICRÓFONO ────────────────────────────────────────────
+
+def pick_mic(pa):
+    mics = [
+        (i, pa.get_device_info_by_index(i)['name'])
+        for i in range(pa.get_device_count())
+        if pa.get_device_info_by_index(i)['maxInputChannels'] > 0
+        and pa.get_device_info_by_index(i)['hostApi'] == 0
+    ]
+    print("\nMicrófonos disponibles:")
+    for idx, (dev_i, name) in enumerate(mics):
+        print(f"  [{idx}] {name}")
+    default = pa.get_default_input_device_info()['name']
+    print(f"\nDefault: {default}")
+    print("Enter = default  |  número = elegir:")
+    choice = input("> ").strip()
+    if not choice:
+        return None
+    try:
+        return mics[int(choice)][0]
+    except Exception:
+        return None
+
+
+# ── MAIN LOOP ────────────────────────────────────────────
 
 def main():
     print(f"Conectando a {SERVER_URL}...")
-    connect_with_retry()
+    connect_loop()
 
-    pa        = pyaudio.PyAudio()
-    mic_index = pick_microphone(pa)
+    pa  = pyaudio.PyAudio()
+    mic = pick_mic(pa)
 
-    open_args = dict(rate=SAMPLE_RATE, channels=1,
-                     format=pyaudio.paInt16,
-                     input=True, frames_per_buffer=CHUNK)
-    if mic_index is not None:
-        open_args['input_device_index'] = mic_index
-        name = pa.get_device_info_by_index(mic_index)['name']
+    kw = dict(rate=SAMPLE_RATE, channels=1,
+              format=pyaudio.paInt16,
+              input=True, frames_per_buffer=CHUNK)
+    if mic is not None:
+        kw['input_device_index'] = mic
+        name = pa.get_device_info_by_index(mic)['name']
     else:
         name = pa.get_default_input_device_info()['name']
     print(f"Micrófono: {name}\n")
 
-    stream = pa.open(**open_args)
-    print("VENVIS listo. Hablá cuando quieras.\n")
+    stream   = pa.open(**kw)
+    pre_buf  = deque(maxlen=PRE_BUFFER)
+    frames   = []
+    recording = False
+    onset     = 0
+    silence   = 0
+    barge_cnt = 0
 
-    onset = 0
+    print("VENVIS listo — hablá cuando quieras.\n")
+
     try:
         while True:
-            data   = stream.read(CHUNK, exception_on_overflow=False)
-            chunk  = np.frombuffer(data, dtype=np.int16)
+            raw    = stream.read(CHUNK, exception_on_overflow=False)
+            chunk  = np.frombuffer(raw, dtype=np.int16)
             energy = int(np.abs(chunk).mean())
 
-            # Silenciar captura mientras VENVIS habla
-            if is_speaking:
-                onset = 0
+            # ── BARGE-IN: interrumpir TTS si el user habla ──
+            if is_speaking():
+                if energy >= ENERGY_TH:
+                    barge_cnt += 1
+                    if barge_cnt >= BARGE_CHUNKS:
+                        stop_tts()
+                        barge_cnt = 0
+                        recording = False
+                        onset     = 0
+                        frames    = []
+                        pre_buf.clear()
+                        print("  [interrumpido]         ")
+                else:
+                    barge_cnt = max(0, barge_cnt - 2)
                 continue
+
+            barge_cnt = 0
 
             # Reconectar si se cayó
             if not sio.connected:
-                connect_with_retry()
+                connect_loop()
 
-            print(f"  vol: {energy:<6}", end="\r")
+            print(f"  vol: {energy:<5}", end="\r")
+            pre_buf.append(raw)
 
-            if energy >= VAD_THRESHOLD:
-                onset += 1
+            # ── IDLE → RECORDING ──────────────────────────
+            if not recording:
+                if energy >= ENERGY_TH:
+                    onset += 1
+                    if onset >= ONSET_CHUNKS:
+                        recording = True
+                        frames    = list(pre_buf)  # incluir pre-buffer
+                        silence   = 0
+                        onset     = 0
+                        print("  [grabando...]          ", end="\r")
+                else:
+                    onset = max(0, onset - 1)
+
+            # ── RECORDING ────────────────────────────────
             else:
-                onset = 0
+                frames.append(raw)
 
-            if onset < VAD_ONSET:
-                continue
+                if energy < ENERGY_TH:
+                    silence += 1
+                else:
+                    silence = 0
 
-            onset = 0
-            print("  [grabando...]         ", end="\r")
+                too_long = len(frames) > int(MAX_RECORD_S * SAMPLE_RATE / CHUNK)
+                end_of_speech = silence >= SILENCE_CHUNKS
 
-            audio_bytes = record_until_silence(stream, first_frame=data)
-            if not audio_bytes:
-                continue
+                if end_of_speech or too_long:
+                    recording = False
+                    onset     = 0
+                    captured  = frames[:]
+                    frames    = []
+                    pre_buf.clear()
 
-            print("  transcribiendo...     ", end="\r")
-            text = transcribe(audio_bytes, lang="es-AR") or transcribe(audio_bytes, lang="en-US")
+                    if len(captured) < MIN_FRAMES:
+                        continue  # muy corto, ignorar
 
-            if not text:
-                print("  ...                   ", end="\r")
-                continue
+                    audio_bytes = b''.join(captured)
 
-            print(f"  oído: '{text}'          ")
+                    def _process(ab):
+                        print("  transcribiendo...      ", end="\r")
+                        text = transcribe(ab)
+                        if not text:
+                            print("  ...                    ", end="\r")
+                            return
 
-            tl = text.lower()
+                        print(f"  oído: '{text}'           ")
 
-            if any(w in tl for w in STOP_WORDS):
-                print("Hasta luego.")
-                break
+                        if any(p in text.lower() for p in STOP_PHRASES):
+                            print("Hasta luego.")
+                            os._exit(0)
 
-            # Ignorar ruido de una sola sílaba
-            words = [w for w in tl.split() if len(w) > 1]
-            if len(words) < 1:
-                continue
+                        words = [w for w in text.split() if len(w) > 1]
+                        if not words:
+                            return
 
-            print(f"Vos: {text}")
-            play_beep()
-            sio.emit("user_message", {"text": text, "sessionId": SESSION_ID, "voiceMode": True})
+                        print(f"Vos: {text}")
+                        beep()
+                        sio.emit("user_message", {
+                            "text": text,
+                            "sessionId": SESSION_ID,
+                            "voiceMode": True
+                        })
+
+                    threading.Thread(target=_process, args=(audio_bytes,),
+                                     daemon=True).start()
 
     except KeyboardInterrupt:
         print("\nDeteniendo...")
     finally:
+        stop_tts()
         stream.stop_stream()
         stream.close()
         pa.terminate()
         if sio.connected:
             sio.disconnect()
 
+
+# MAX_RECORD_S definido aquí para evitar referencia antes de asignación
+MAX_RECORD_S = 15
 
 if __name__ == "__main__":
     main()
