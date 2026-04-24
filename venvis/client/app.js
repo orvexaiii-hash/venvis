@@ -8,6 +8,8 @@ let currentMode = 'chat'
 let isRecording = false
 let recognition = null
 let pendingVenvisBubble = null
+let pttHeld     = false
+let pttGotResult = false
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -139,6 +141,7 @@ function initSpeechRecognition() {
   recognition.onresult = (e) => {
     const text = e.results[0][0].transcript.trim()
     if (!text) return
+    pttGotResult = true
     voiceTrans.textContent = `Vos: ${text}`
     setVoiceState('processing')
     socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
@@ -149,14 +152,18 @@ function initSpeechRecognition() {
     if (e.error === 'not-allowed') {
       voiceStatusText.textContent = 'Permiso de micrófono denegado'
       voiceStatus.className = 'voice-status'
-    } else {
-      setVoiceState('idle')
+      isRecording = false
+      btnPTT.classList.remove('recording')
     }
-    isRecording = false
-    btnPTT.classList.remove('recording')
+    // otros errores (network, no-speech): onend se encarga
   }
 
   recognition.onend = () => {
+    // si el botón sigue presionado y aún no hubo resultado, reiniciar
+    if (pttHeld && !pttGotResult) {
+      try { recognition.start() } catch (_) {}
+      return
+    }
     isRecording = false
     btnPTT.classList.remove('recording')
     if (voiceStatus.classList.contains('listening')) setVoiceState('idle')
@@ -364,11 +371,11 @@ function stopListening() {
   recognition.stop()
 }
 
-btnPTT.addEventListener('mousedown', startListening)
-btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); startListening() }, { passive: false })
-btnPTT.addEventListener('mouseup', stopListening)
-btnPTT.addEventListener('touchend', (e) => { e.preventDefault(); stopListening() }, { passive: false })
-btnPTT.addEventListener('mouseleave', stopListening)
+btnPTT.addEventListener('mousedown', () => { pttHeld = true; pttGotResult = false; startListening() })
+btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); pttHeld = true; pttGotResult = false; startListening() }, { passive: false })
+btnPTT.addEventListener('mouseup', () => { pttHeld = false; stopListening() })
+btnPTT.addEventListener('touchend', (e) => { e.preventDefault(); pttHeld = false; stopListening() }, { passive: false })
+btnPTT.addEventListener('mouseleave', () => { pttHeld = false; stopListening() })
 
 // ── MEMORIA ──
 btnMemory.addEventListener('click', async () => {
