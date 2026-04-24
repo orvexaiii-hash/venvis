@@ -4,11 +4,15 @@ const socket = io()
 let SESSION_ID   = localStorage.getItem('venvis_session') || null
 let SESSION_USER = localStorage.getItem('venvis_user')   || null
 
-let currentMode  = 'chat'
-let isRecording  = false
-let recognition  = null
+let currentMode       = 'chat'
+let isRecording       = false
+let recognition       = null
 let pendingVenvisBubble = null
-let accumulatedText = ''
+let accumulatedText   = ''
+let conversationActive = false
+let sendTimer         = null
+let waitingForTTS     = false
+const SEND_DELAY_MS   = 1500   // ms de silencio antes de enviar
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -131,6 +135,7 @@ function initSpeechRecognition() {
   recognition.interimResults = true
 
   recognition.onstart = () => {
+    isRecording = true
     btnPTT.classList.add('recording')
     setVoiceState('listening')
   }
@@ -139,8 +144,13 @@ function initSpeechRecognition() {
     let interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript
-      if (e.results[i].isFinal) accumulatedText += t + ' '
-      else interim = t
+      if (e.results[i].isFinal) {
+        accumulatedText += t + ' '
+        clearTimeout(sendTimer)
+        sendTimer = setTimeout(sendAccumulated, SEND_DELAY_MS)
+      } else {
+        interim = t
+      }
     }
     voiceTrans.textContent = `Vos: ${(accumulatedText + interim).trim()}`
   }
@@ -150,32 +160,55 @@ function initSpeechRecognition() {
     if (e.error === 'not-allowed') {
       voiceStatusText.textContent = 'Permiso de micrófono denegado'
       voiceStatus.className = 'voice-status'
-      isRecording = false
-      btnPTT.classList.remove('recording')
-      setVoiceState('idle')
+      stopConversation()
     }
-    // no-speech y otros errores transitorios: onend reinicia si isRecording sigue true
+    // no-speech / network: onend se encarga de reiniciar
   }
 
   recognition.onend = () => {
-    if (isRecording) {
-      // el usuario no clickeó stop — fue un timeout de silencio, reiniciar
-      try { recognition.start() } catch (_) {}
-      return
-    }
-    // usuario clickeó stop
+    isRecording = false
     btnPTT.classList.remove('recording')
-    const text = accumulatedText.trim()
-    if (text) {
-      setVoiceState('processing')
-      socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
-    } else {
-      setVoiceState('idle')
-    }
+    if (!conversationActive || waitingForTTS || sendTimer) return
+    // silencio sin hablar y sin timer pendiente — reiniciar escucha
+    setTimeout(() => {
+      if (conversationActive && !waitingForTTS && !sendTimer) startListeningLoop()
+    }, 200)
   }
 }
 
 initSpeechRecognition()
+
+function sendAccumulated() {
+  sendTimer = null
+  const text = accumulatedText.trim()
+  accumulatedText = ''
+  if (!text || !conversationActive) return
+  isRecording = false
+  waitingForTTS = true
+  try { recognition.abort() } catch (_) {}
+  voiceTrans.textContent = `Vos: ${text}`
+  setVoiceState('processing')
+  socket.emit('user_message', { text, sessionId: SESSION_ID, voiceMode: true })
+}
+
+function startListeningLoop() {
+  if (!recognition || isRecording || !conversationActive) return
+  accumulatedText = ''
+  try { recognition.start() } catch (_) {}
+}
+
+function stopConversation() {
+  conversationActive = false
+  isRecording = false
+  waitingForTTS = false
+  clearTimeout(sendTimer)
+  sendTimer = null
+  try { recognition.abort() } catch (_) {}
+  stopCurrentAudio()
+  btnPTT.classList.remove('recording')
+  btnPTT.textContent = '🎙'
+  setVoiceState('idle')
+}
 
 // ── VOICE STATE ──
 function setVoiceState(state) {
@@ -297,10 +330,18 @@ socket.on('venvis_done', ({ text }) => {
   chatInput.disabled = false
   chatInput.focus()
   scrollBottom()
+  // si es modo voz y no hay audio (TTS desactivado o falló), reanudar igual
+  if (currentMode === 'voice' && waitingForTTS && !currentAudio) {
+    setTimeout(resumeConversation, 300)
+  }
 })
 
 socket.on('venvis_audio', ({ audioBase64 }) => {
-  if (!audioEnabled) return
+  if (!audioEnabled) {
+    // sin audio — reanudar conversación igual
+    if (currentMode === 'voice') resumeConversation()
+    return
+  }
   stopCurrentAudio()
   const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
   const blob = new Blob([bytes], { type: 'audio/mpeg' })
@@ -311,10 +352,20 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(url)
     currentAudio = null
-    if (currentMode === 'voice') setVoiceState('idle')
+    if (currentMode === 'voice') resumeConversation()
   })
-  audio.play().catch(() => {})
+  audio.play().catch(() => resumeConversation())
 })
+
+function resumeConversation() {
+  waitingForTTS = false
+  if (conversationActive) {
+    setVoiceState('listening')
+    startListeningLoop()
+  } else {
+    setVoiceState('idle')
+  }
+}
 
 socket.on('venvis_error', ({ message }) => {
   pendingVenvisBubble = null
@@ -360,29 +411,15 @@ socket.on('venvis_proactive', ({ text, audioBase64 }) => {
   }
 })
 
-// ── VOZ: toggle con SpeechRecognition ──
-function startListening() {
-  if (!recognition || isRecording) return
-  stopCurrentAudio()
-  accumulatedText = ''
-  isRecording = true   // set ANTES de start para que onend sepa reiniciar si hay timeout
-  try {
-    recognition.start()
-  } catch (err) {
-    console.error('[PTT] start error:', err)
-    isRecording = false
-  }
-}
-
-function stopListening() {
-  if (!recognition || !isRecording) return
-  isRecording = false  // set ANTES de stop para que onend sepa enviar el texto
-  recognition.stop()
-}
-
+// ── VOZ: botón de conversación continua ──
 btnPTT.addEventListener('click', () => {
-  if (!isRecording) startListening()
-  else stopListening()
+  if (!conversationActive) {
+    conversationActive = true
+    btnPTT.textContent = '⏹'
+    startListeningLoop()
+  } else {
+    stopConversation()
+  }
 })
 btnPTT.addEventListener('touchstart', (e) => { e.preventDefault(); btnPTT.click() }, { passive: false })
 
