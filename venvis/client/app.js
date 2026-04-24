@@ -131,11 +131,8 @@ function initSpeechRecognition() {
   recognition.interimResults = true
 
   recognition.onstart = () => {
-    isRecording = true
-    accumulatedText = ''
     btnPTT.classList.add('recording')
     setVoiceState('listening')
-    voiceTrans.textContent = ''
   }
 
   recognition.onresult = (e) => {
@@ -153,14 +150,20 @@ function initSpeechRecognition() {
     if (e.error === 'not-allowed') {
       voiceStatusText.textContent = 'Permiso de micrófono denegado'
       voiceStatus.className = 'voice-status'
+      isRecording = false
+      btnPTT.classList.remove('recording')
+      setVoiceState('idle')
     }
-    isRecording = false
-    btnPTT.classList.remove('recording')
-    setVoiceState('idle')
+    // no-speech y otros errores transitorios: onend reinicia si isRecording sigue true
   }
 
   recognition.onend = () => {
-    isRecording = false
+    if (isRecording) {
+      // el usuario no clickeó stop — fue un timeout de silencio, reiniciar
+      try { recognition.start() } catch (_) {}
+      return
+    }
+    // usuario clickeó stop
     btnPTT.classList.remove('recording')
     const text = accumulatedText.trim()
     if (text) {
@@ -357,19 +360,23 @@ socket.on('venvis_proactive', ({ text, audioBase64 }) => {
   }
 })
 
-// ── VOZ: push-to-talk con SpeechRecognition ──
+// ── VOZ: toggle con SpeechRecognition ──
 function startListening() {
   if (!recognition || isRecording) return
   stopCurrentAudio()
+  accumulatedText = ''
+  isRecording = true   // set ANTES de start para que onend sepa reiniciar si hay timeout
   try {
     recognition.start()
   } catch (err) {
     console.error('[PTT] start error:', err)
+    isRecording = false
   }
 }
 
 function stopListening() {
   if (!recognition || !isRecording) return
+  isRecording = false  // set ANTES de stop para que onend sepa enviar el texto
   recognition.stop()
 }
 
