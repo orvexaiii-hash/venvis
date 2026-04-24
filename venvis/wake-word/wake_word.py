@@ -26,7 +26,7 @@ VAD_ONSET      = 3     # chunks seguidos con voz para empezar a grabar
 SILENCE_CHUNKS = 15    # chunks de silencio para cortar la grabación
 MAX_CHUNKS     = 200   # máximo de grabación (~13s)
 
-STOP_WORDS  = {"detente", "para", "stop", "salir", "adiós", "adios", "chau"}
+STOP_WORDS  = {"detente venvis", "para venvis", "apagar venvis", "cerrar venvis"}
 # ────────────────────────────────────────────────────────
 
 sio        = socketio.Client(logger=False, engineio_logger=False)
@@ -96,7 +96,7 @@ def on_connect():
 
 @sio.on("disconnect")
 def on_disconnect():
-    print("Desconectado.")
+    print("\n[reconectando...]")
 
 @sio.on("venvis_chunk")
 def on_chunk(data):
@@ -189,13 +189,21 @@ def pick_microphone(pa):
 
 # ── MAIN ─────────────────────────────────────────────────
 
+def connect_with_retry():
+    """Conecta al servidor, reintentando hasta lograrlo."""
+    while True:
+        try:
+            if not sio.connected:
+                sio.connect(SERVER_URL, transports=["websocket"])
+            return True
+        except Exception as e:
+            print(f"  [sin conexión, reintentando en 3s...] {e}")
+            import time; time.sleep(3)
+
+
 def main():
     print(f"Conectando a {SERVER_URL}...")
-    try:
-        sio.connect(SERVER_URL, transports=["websocket"])
-    except Exception as e:
-        print(f"Error de conexión: {e}")
-        return
+    connect_with_retry()
 
     pa        = pyaudio.PyAudio()
     mic_index = pick_microphone(pa)
@@ -211,20 +219,23 @@ def main():
     print(f"Micrófono: {name}\n")
 
     stream = pa.open(**open_args)
-
-    print('Escuchando... (decí "hey jarvis" o "venvis")\n')
+    print("VENVIS listo. Hablá cuando quieras.\n")
 
     onset = 0
     try:
         while True:
-            # Escuchar hasta detectar voz sostenida
             data   = stream.read(CHUNK, exception_on_overflow=False)
             chunk  = np.frombuffer(data, dtype=np.int16)
             energy = int(np.abs(chunk).mean())
 
+            # Silenciar captura mientras VENVIS habla
             if is_speaking:
                 onset = 0
                 continue
+
+            # Reconectar si se cayó
+            if not sio.connected:
+                connect_with_retry()
 
             print(f"  vol: {energy:<6}", end="\r")
 
@@ -239,7 +250,6 @@ def main():
             onset = 0
             print("  [grabando...]         ", end="\r")
 
-            # Grabar hasta silencio
             audio_bytes = record_until_silence(stream, first_frame=data)
             if not audio_bytes:
                 continue
@@ -248,7 +258,7 @@ def main():
             text = transcribe(audio_bytes, lang="es-AR") or transcribe(audio_bytes, lang="en-US")
 
             if not text:
-                print("  (no se entendió)      ", end="\r")
+                print("  ...                   ", end="\r")
                 continue
 
             print(f"  oído: '{text}'          ")
@@ -259,8 +269,8 @@ def main():
                 print("Hasta luego.")
                 break
 
-            # Ignorar frases muy cortas o de ruido
-            words = [w for w in tl.split() if len(w) > 2]
+            # Ignorar ruido de una sola sílaba
+            words = [w for w in tl.split() if len(w) > 1]
             if len(words) < 1:
                 continue
 
@@ -274,7 +284,8 @@ def main():
         stream.stop_stream()
         stream.close()
         pa.terminate()
-        sio.disconnect()
+        if sio.connected:
+            sio.disconnect()
 
 
 if __name__ == "__main__":
