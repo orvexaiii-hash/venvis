@@ -22,6 +22,7 @@ jobs:
             set -e
             cd /var/www/venvis/venvis
             git pull origin master
+            cd venvis
             docker build --no-cache -t venvis:latest .
             docker service update --image venvis:latest venvis_venvis
-            echo "✓ VENVIS deployed successfully"
+            echo "✓ VENVIS deployed at $(date)"
