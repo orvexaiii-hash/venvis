@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
 import { getRecentMessages, getAllMemory, saveMessage, upsertMemory } from './memory.mjs'
 import { searchWeb, formatSearchResults }                              from './search.mjs'
 import { getTodayEvents, getWeekEvents, createEvent, CALENDAR_ENABLED } from './calendar.mjs'
 import { turnOn, turnOff, setColor, sendIRCommand, controlACviaIR, TUYA_ENABLED } from './tuya.mjs'
+import { textToSpeech } from './tts.mjs'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const MODEL  = 'claude-haiku-4-5-20251001'
@@ -100,6 +102,19 @@ function needsSearch(text) {
   return SEARCH_WORDS.some(k => lower.includes(k))
 }
 
+// ── MARKDOWN STRIPPER (for TTS) ──────────────────────────
+
+function stripMarkdownForSpeech(text) {
+  return text
+    .replace(/\*{1,3}([^*]*)\*{1,3}/g, '$1')
+    .replace(/#{1,6}\s*/g, '')
+    .replace(/^\s*[-*•]\s+/gm, '')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .trim()
+}
+
 // ── SYSTEM PROMPT ────────────────────────────────────────
 
 function buildSystemPrompt(memoryItems, voiceMode = false, userName = 'el usuario') {
@@ -125,7 +140,13 @@ function buildSystemPrompt(memoryItems, voiceMode = false, userName = 'el usuari
   ].filter(Boolean).join('\n')
 
   const voiceRule = voiceMode
-    ? '\nMODO VOZ ACTIVO: Respondé en máximo 2-3 oraciones. Sé directo y conciso. Si la respuesta requiere más detalle, resumí lo esencial y preguntá si el usuario quiere que continúes. No uses listas, bullets ni markdown — solo texto natural para hablar.'
+    ? `\n\nMODO VOZ — REGLAS ABSOLUTAS:
+• Máximo 2-3 oraciones cortas. Nunca más larga la respuesta.
+• CERO markdown: sin asteriscos (*), sin guiones de lista (-), sin almohadillas (#), sin backticks, sin negritas, sin cursivas.
+• Solo texto que suene natural al hablar en voz alta. Escribí como si hablaras, no como si redactaras un documento.
+• Si el tema requiere más detalle, cubrí lo esencial en 2-3 oraciones y preguntá si el usuario quiere saber más.
+• No leas URLs ni datos técnicos en crudo — resumilos con palabras naturales.
+• Usá contracciones y lenguaje coloquial rioplatense. Evitá frases formales.`
     : ''
 
   return `Sos VENVIS, asistente personal de IA de ${userName}. Tu modelo de personalidad es Jarvis de Iron Man: preciso, eficiente, levemente irónico cuando la situación lo amerita. Hablás en español rioplatense con registro elevado. Nunca usás malas palabras. Nunca empezás una respuesta con "¡Claro!", "¡Por supuesto!", "¡Genial!" ni frases aduladoras similares. Sos directo y vas al punto. Cuando el usuario está equivocado, se lo decís con claridad y fundamento, sin suavizarlo innecesariamente. Tenés criterio propio.${voiceRule}
@@ -234,29 +255,81 @@ function extractRemind(fullText) {
   catch { return { clean, remind: null } }
 }
 
-// ── STREAM FINAL RESPONSE ────────────────────────────────
+// ── STREAM FINAL RESPONSE (with optional sentence-level TTS) ──
 
-async function streamFinal(socket, messages, systemPrompt) {
-  let fullText = ''
-  const stream = client.messages.stream({ model: MODEL, max_tokens: 1024, system: systemPrompt, messages })
+async function streamFinal(socket, messages, systemPrompt, voiceMode = false, streamId = null) {
+  let fullText    = ''
+  let sentenceBuf = ''
+  let seq         = 0
+  const ttsTasks  = []
+
+  const maxTokens = voiceMode ? 512 : 1024
+  const stream = client.messages.stream({
+    model: MODEL, max_tokens: maxTokens, system: systemPrompt, messages
+  })
+
+  const sentenceRe = /^([\s\S]*?[.!?])\s+/
+
   for await (const event of stream) {
     if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-      fullText += event.delta.text
-      socket.emit('venvis_chunk', { text: event.delta.text })
+      const chunk = event.delta.text
+      fullText += chunk
+      socket.emit('venvis_chunk', { text: chunk })
+
+      if (voiceMode && streamId) {
+        sentenceBuf += chunk
+        let match
+        while ((match = sentenceRe.exec(sentenceBuf)) !== null) {
+          const sentence = match[1].trim()
+          sentenceBuf = sentenceBuf.slice(match[0].length)
+          if (sentence.length >= 8) {
+            const s = seq++
+            const clean = stripMarkdownForSpeech(sentence)
+            ttsTasks.push(
+              textToSpeech(clean)
+                .then(buf => socket.emit('venvis_audio_chunk', {
+                  streamId, seq: s,
+                  audioBase64: buf ? buf.toString('base64') : null
+                }))
+                .catch(() => socket.emit('venvis_audio_chunk', { streamId, seq: s, audioBase64: null }))
+            )
+          }
+        }
+      }
     }
   }
+
+  if (voiceMode && streamId) {
+    const remaining = sentenceBuf.trim()
+    if (remaining.length >= 8) {
+      const s = seq++
+      const clean = stripMarkdownForSpeech(remaining)
+      ttsTasks.push(
+        textToSpeech(clean)
+          .then(buf => socket.emit('venvis_audio_chunk', {
+            streamId, seq: s,
+            audioBase64: buf ? buf.toString('base64') : null
+          }))
+          .catch(() => socket.emit('venvis_audio_chunk', { streamId, seq: s, audioBase64: null }))
+      )
+    }
+    await Promise.all(ttsTasks)
+    socket.emit('venvis_audio_end', { streamId, total: seq })
+  }
+
   return fullText
 }
 
 // ── MAIN EXPORT ──────────────────────────────────────────
 
 export async function streamResponse(socket, userText, sessionId, voiceMode = false, imageData = null) {
-  const history      = getRecentMessages(sessionId, 10)
+  const history      = getRecentMessages(sessionId, 12)
   const memoryItems  = getAllMemory(sessionId)
   const USER_NAMES   = { charly: 'Charly', agus: 'Agus' }
   const userName     = USER_NAMES[sessionId] || 'el usuario'
   const systemPrompt = buildSystemPrompt(memoryItems, voiceMode, userName)
   const tools        = buildTools()
+  const streamId     = voiceMode ? randomUUID() : null
 
   const userContent = imageData
     ? [
@@ -276,7 +349,7 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
   let fullText = ''
 
   if (tools.length === 0) {
-    fullText = await streamFinal(socket, baseMessages, systemPrompt)
+    fullText = await streamFinal(socket, baseMessages, systemPrompt, voiceMode, streamId)
   } else {
     const forceSearch  = SEARCH_ENABLED && needsSearch(userText)
     const tool_choice  = forceSearch ? { type: 'tool', name: 'web_search' } : { type: 'auto' }
@@ -286,7 +359,7 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
 
     for (let i = 0; i < MAX_ITERS; i++) {
       const response = await client.messages.create({
-        model: MODEL, max_tokens: 1024,
+        model: MODEL, max_tokens: voiceMode ? 512 : 1024,
         system: systemPrompt,
         messages: workingMessages,
         tools,
@@ -294,9 +367,8 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
       })
 
       if (response.stop_reason === 'end_turn') {
-        // Stream the final answer
         workingMessages.push({ role: 'assistant', content: response.content })
-        fullText = await streamFinal(socket, workingMessages.slice(0, -1), systemPrompt)
+        fullText = await streamFinal(socket, workingMessages.slice(0, -1), systemPrompt, voiceMode, streamId)
         break
       }
 
@@ -315,8 +387,7 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
         continue
       }
 
-      // Unexpected stop reason — stream directly
-      fullText = await streamFinal(socket, baseMessages, systemPrompt)
+      fullText = await streamFinal(socket, baseMessages, systemPrompt, voiceMode, streamId)
       break
     }
   }
@@ -330,5 +401,5 @@ export async function streamResponse(socket, userText, sessionId, voiceMode = fa
   }
   saveMessage(sessionId, 'venvis', clean)
   socket.emit('venvis_done', { text: clean })
-  return clean
+  return { fullText: clean, voiceStreamed: !!streamId }
 }

@@ -15,6 +15,12 @@ let waitingForTTS     = false
 let ttsPlaying        = false
 const SEND_DELAY_MS   = 1500
 
+// ── STREAMING TTS QUEUE ──────────────────────────────────
+let audioChunkQueue  = {}     // seq → audioBase64
+let audioChunkNext   = 0      // next seq to play
+let audioChunkTotal  = null   // set by venvis_audio_end
+let currentStreamId  = null   // id of active stream; null = no stream
+
 
 const chatView        = document.getElementById('chatView')
 const voiceView       = document.getElementById('voiceView')
@@ -200,8 +206,16 @@ function startListeningLoop() {
   try { recognition.start() } catch (_) {}
 }
 
+function resetChunkQueue() {
+  currentStreamId = null
+  audioChunkQueue = {}
+  audioChunkNext  = 0
+  audioChunkTotal = null
+}
+
 function handleInterrupt() {
   stopCurrentAudio()
+  resetChunkQueue()
   clearTimeout(sendTimer); sendTimer = null
   waitingForTTS = false
   btnInterrupt.classList.add('hidden')
@@ -220,6 +234,7 @@ function stopConversation() {
   ttsPlaying = false
   clearTimeout(sendTimer)
   sendTimer = null
+  resetChunkQueue()
   try { recognition.abort() } catch (_) {}
   stopCurrentAudio()
   btnPTT.classList.remove('recording')
@@ -348,9 +363,9 @@ socket.on('venvis_done', ({ text }) => {
   chatInput.disabled = false
   chatInput.focus()
   scrollBottom()
-  // venvis_audio llega separado y maneja el reinicio; si no llega en 4s, reanudar igual
+  // fallback: si no llegan chunks de TTS en 4s (o no hay TTS activo), reanudar
   if (currentMode === 'voice' && waitingForTTS) {
-    setTimeout(() => { if (waitingForTTS) resumeConversation() }, 4000)
+    setTimeout(() => { if (waitingForTTS && !currentStreamId) resumeConversation() }, 4000)
   }
 })
 
@@ -391,6 +406,86 @@ socket.on('venvis_audio', ({ audioBase64 }) => {
     if (currentMode === 'voice') resumeConversation()
   })
 })
+
+// ── STREAMING TTS (venvis_audio_chunk / venvis_audio_end) ──
+
+socket.on('venvis_audio_chunk', ({ streamId, seq, audioBase64 }) => {
+  if (streamId !== currentStreamId) {
+    if (seq !== 0) return  // stale chunk from old stream
+    // New stream starting
+    currentStreamId = streamId
+    audioChunkQueue = {}
+    audioChunkNext  = 0
+    audioChunkTotal = null
+    waitingForTTS   = false  // TTS is starting, clear the wait state
+    ttsPlaying      = true
+    clearTimeout(sendTimer); sendTimer = null
+    accumulatedText = ''
+    isRecording     = false
+    try { recognition.abort() } catch (_) {}
+  }
+  audioChunkQueue[seq] = audioBase64  // may be null for failed sentences
+  tryPlayNextChunk()
+})
+
+socket.on('venvis_audio_end', ({ streamId, total }) => {
+  if (streamId !== currentStreamId) return
+  audioChunkTotal = total
+  tryPlayNextChunk()
+  // if all chunks finished playing before this event arrived, finish now
+  if (!currentAudio) checkChunksDone()
+})
+
+function tryPlayNextChunk() {
+  if (currentAudio) return                          // already playing
+  if (!(audioChunkNext in audioChunkQueue)) return  // chunk not yet arrived
+
+  const audioBase64 = audioChunkQueue[audioChunkNext]
+  delete audioChunkQueue[audioChunkNext]
+
+  if (!audioBase64 || !audioEnabled) {
+    audioChunkNext++
+    if (!checkChunksDone()) tryPlayNextChunk()
+    return
+  }
+
+  const bytes = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
+  const blob  = new Blob([bytes], { type: 'audio/mpeg' })
+  const url   = URL.createObjectURL(blob)
+  const audio = new Audio(url)
+  currentAudio = audio
+
+  if (currentMode === 'voice') {
+    setVoiceState('speaking')
+    if (conversationActive) btnInterrupt.classList.remove('hidden')
+  }
+
+  audio.addEventListener('ended', () => {
+    URL.revokeObjectURL(url)
+    currentAudio = null
+    audioChunkNext++
+    if (!checkChunksDone()) tryPlayNextChunk()
+  })
+
+  audio.play().catch(() => {
+    currentAudio = null
+    audioChunkNext++
+    if (!checkChunksDone()) tryPlayNextChunk()
+  })
+}
+
+function checkChunksDone() {
+  if (audioChunkTotal !== null && audioChunkNext >= audioChunkTotal) {
+    btnInterrupt.classList.add('hidden')
+    resetChunkQueue()
+    setTimeout(() => {
+      ttsPlaying = false
+      if (currentMode === 'voice') resumeConversation()
+    }, 500)
+    return true
+  }
+  return false
+}
 
 function resumeConversation() {
   waitingForTTS = false

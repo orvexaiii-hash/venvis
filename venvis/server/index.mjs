@@ -138,10 +138,10 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const fullText    = await streamResponse(socket, text || '', sid, !!voiceMode, imageData)
-      const audioBuffer = await textToSpeech(fullText)
-      if (audioBuffer) {
-        socket.emit('venvis_audio', { audioBase64: audioBuffer.toString('base64') })
+      const { fullText, voiceStreamed } = await streamResponse(socket, text || '', sid, !!voiceMode, imageData)
+      if (!voiceStreamed) {
+        const audioBuffer = await textToSpeech(fullText)
+        if (audioBuffer) socket.emit('venvis_audio', { audioBase64: audioBuffer.toString('base64') })
       }
     } catch (err) {
       console.error('[Socket] Error:', err.message)
