@@ -11,8 +11,42 @@ import os
 import threading
 import ctypes
 import time
+import sys
+import signal
 from collections import deque
 from faster_whisper import WhisperModel
+
+# ── INSTANCIA ÚNICA ──────────────────────────────────────
+_LOCK_FILE = os.path.join(os.path.dirname(__file__), ".venvis.pid")
+
+def _enforce_single_instance():
+    if os.path.exists(_LOCK_FILE):
+        try:
+            with open(_LOCK_FILE) as f:
+                old_pid = int(f.read().strip())
+            import psutil
+            try:
+                p = psutil.Process(old_pid)
+                p.kill()
+                print(f"  [instancia anterior (PID {old_pid}) terminada]")
+                time.sleep(0.5)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        except Exception:
+            pass
+    with open(_LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+def _cleanup_lock():
+    try:
+        os.unlink(_LOCK_FILE)
+    except Exception:
+        pass
+
+_enforce_single_instance()
+import atexit
+atexit.register(_cleanup_lock)
+# ─────────────────────────────────────────────────────────
 
 # ── CONFIG ───────────────────────────────────────────────
 SERVER_URL  = "https://venvis.orvexautomation.com"
