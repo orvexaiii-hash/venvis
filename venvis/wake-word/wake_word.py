@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""VENVIS Voice Client — siempre activo, barge-in, conversación fluida."""
+"""VENVIS Voice Client — faster-whisper + webrtcvad"""
 
 import pyaudio
 import numpy as np
+import webrtcvad
 import socketio
-import speech_recognition as sr
 import asyncio
 import tempfile
 import os
@@ -12,36 +12,39 @@ import threading
 import ctypes
 import time
 from collections import deque
+from faster_whisper import WhisperModel
 
-# ── CONFIG ──────────────────────────────────────────────
+# ── CONFIG ───────────────────────────────────────────────
 SERVER_URL  = "https://venvis.orvexautomation.com"
 SESSION_ID  = "charly"
 SAMPLE_RATE = 16000
-CHUNK       = 512          # 32ms por chunk — respuesta rápida
+FRAME_MS    = 30
+FRAME_SAMP  = int(SAMPLE_RATE * FRAME_MS / 1000)   # 480 samples
+FRAME_BYTES = FRAME_SAMP * 2                         # 960 bytes
 
 VOICE       = "es-AR-TomasNeural"
 TTS_RATE    = "-5%"
 TTS_PITCH   = "-2Hz"
 
-# VAD
-ENERGY_TH      = 280       # umbral de energía (bajar si no detecta)
-ONSET_CHUNKS   = 4         # ~128ms sostenidos para empezar a grabar
-SILENCE_CHUNKS = 14        # ~450ms de silencio para cortar
-BARGE_CHUNKS   = 5         # ~160ms de voz para interrumpir TTS
-PRE_BUFFER     = 12        # chunks guardados antes del onset (no perder inicio)
-MIN_FRAMES     = 6         # mínimo de frames para enviar (~192ms)
+VAD_MODE       = 2    # 0-3 agresividad (2 = equilibrado)
+ONSET_FRAMES   = 5    # ~150ms de voz para iniciar grabación
+SILENCE_FRAMES = 25   # ~750ms de silencio para cortar
+PRE_FRAMES     = 10   # frames guardados antes del onset
+MIN_FRAMES     = 8    # mínimo para procesar
+MAX_FRAMES     = 600  # ~18s máximo
 
-STOP_PHRASES   = {"detente venvis", "cerrar venvis", "apagar venvis"}
-# ────────────────────────────────────────────────────────
+STOP_PHRASES = {"detente venvis", "cerrar venvis", "apagar venvis"}
+# ─────────────────────────────────────────────────────────
 
 mci       = ctypes.windll.winmm
 TTS_ALIAS = "venvis_tts"
 
 # ── ESTADO GLOBAL ────────────────────────────────────────
 _lock     = threading.Lock()
-_speaking = False      # True mientras TTS reproduce
-_tts_file = None       # path del mp3 en reproducción
-_tts_gen  = 0          # generation counter — evita race condition en barge-in
+_speaking = False
+_tts_file = None
+_tts_gen  = 0
+_tts_stop = threading.Event()
 
 
 def is_speaking():
@@ -61,6 +64,7 @@ def set_speaking(val, path=None):
 
 def stop_tts():
     global _tts_file
+    _tts_stop.set()
     mci.mciSendStringW(f'stop {TTS_ALIAS}',  None, 0, None)
     mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
     with _lock:
@@ -75,7 +79,7 @@ def stop_tts():
 
 
 def _play_mp3(path):
-    """Bloquea hasta que termina o stop_tts() lo interrumpe."""
+    """Reproduce MP3. Polling non-bloqueante — se corta si _tts_stop se setea."""
     abs_path = os.path.abspath(path).replace("/", "\\")
     mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
     err = mci.mciSendStringW(
@@ -84,7 +88,14 @@ def _play_mp3(path):
     )
     if err:
         return
-    mci.mciSendStringW(f'play {TTS_ALIAS} wait', None, 0, None)
+    mci.mciSendStringW(f'play {TTS_ALIAS}', None, 0, None)
+    buf = ctypes.create_unicode_buffer(128)
+    while not _tts_stop.is_set():
+        mci.mciSendStringW(f'status {TTS_ALIAS} mode', buf, 128, None)
+        if buf.value not in ('playing', 'seeking'):
+            break
+        time.sleep(0.05)
+    mci.mciSendStringW(f'stop {TTS_ALIAS}',  None, 0, None)
     mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
 
 
@@ -99,10 +110,11 @@ async def _tts_async(text):
 
 
 def speak(text):
-    """Genera y reproduce TTS en hilo separado. Interrumpible."""
-    global _tts_gen
+    """Genera y reproduce TTS. Generación counter evita overlap entre hilos."""
+    global _tts_gen, _tts_stop
     _tts_gen += 1
     my_gen = _tts_gen
+    _tts_stop.clear()
 
     def _run():
         tmp = None
@@ -113,7 +125,7 @@ def speak(text):
         except Exception as e:
             print(f"[TTS] {e}")
         finally:
-            if _tts_gen == my_gen:  # solo si no arrancó otro TTS después
+            if _tts_gen == my_gen:
                 stop_tts()
 
     threading.Thread(target=_run, daemon=True).start()
@@ -137,12 +149,12 @@ sio = socketio.Client(
 
 @sio.on("connect")
 def _on_connect():
-    print("  [conectado]            ")
+    print("  [conectado]")
 
 
 @sio.on("disconnect")
 def _on_disconnect():
-    print("  [reconectando...]      ")
+    print("  [reconectando...]")
 
 
 @sio.on("venvis_done")
@@ -170,24 +182,21 @@ def connect_loop():
             time.sleep(3)
 
 
-# ── STT ──────────────────────────────────────────────────
+# ── STT (faster-whisper local) ───────────────────────────
 
-recognizer = sr.Recognizer()
-recognizer.energy_threshold    = 300
-recognizer.dynamic_energy_threshold = False
+def load_model():
+    print("Cargando modelo Whisper (primera vez tarda ~30s)...")
+    m = WhisperModel("small", device="cpu", compute_type="int8")
+    print("Modelo listo.\n")
+    return m
 
 
-def transcribe(audio_bytes):
-    data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
-    for lang in ("es-AR", "en-US"):
-        try:
-            return recognizer.recognize_google(data, language=lang)
-        except sr.UnknownValueError:
-            continue
-        except sr.RequestError as e:
-            print(f"[STT] {e}")
-            return None
-    return None
+def transcribe(whisper, frames):
+    audio_bytes = b''.join(frames)
+    audio_np    = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    segments, _ = whisper.transcribe(audio_np, language="es", beam_size=5)
+    text = " ".join(seg.text for seg in segments).strip()
+    return text or None
 
 
 # ── MICRÓFONO ────────────────────────────────────────────
@@ -220,12 +229,14 @@ def main():
     print(f"Conectando a {SERVER_URL}...")
     connect_loop()
 
-    pa  = pyaudio.PyAudio()
-    mic = pick_mic(pa)
+    whisper = load_model()
+    vad     = webrtcvad.Vad(VAD_MODE)
+    pa      = pyaudio.PyAudio()
+    mic     = pick_mic(pa)
 
     kw = dict(rate=SAMPLE_RATE, channels=1,
               format=pyaudio.paInt16,
-              input=True, frames_per_buffer=CHUNK)
+              input=True, frames_per_buffer=FRAME_SAMP)
     if mic is not None:
         kw['input_device_index'] = mic
         name = pa.get_device_info_by_index(mic)['name']
@@ -233,92 +244,80 @@ def main():
         name = pa.get_default_input_device_info()['name']
     print(f"Micrófono: {name}\n")
 
-    stream   = pa.open(**kw)
-    pre_buf  = deque(maxlen=PRE_BUFFER)
-    frames   = []
+    stream    = pa.open(**kw)
+    pre_buf   = deque(maxlen=PRE_FRAMES)
+    frames    = []
     recording = False
-    onset     = 0
+    voiced    = 0
     silence   = 0
-    barge_cnt = 0
 
     print("VENVIS listo — hablá cuando quieras.\n")
 
     try:
         while True:
-            raw    = stream.read(CHUNK, exception_on_overflow=False)
-            chunk  = np.frombuffer(raw, dtype=np.int16)
-            energy = int(np.abs(chunk).mean())
+            raw = stream.read(FRAME_SAMP, exception_on_overflow=False)
 
-            # ── BARGE-IN: interrumpir TTS si el user habla ──
+            # Hard suppression: ignorar todo mientras VENVIS habla
             if is_speaking():
-                if energy >= ENERGY_TH:
-                    barge_cnt += 1
-                    if barge_cnt >= BARGE_CHUNKS:
-                        stop_tts()
-                        barge_cnt = 0
-                        recording = False
-                        onset     = 0
-                        frames    = []
-                        pre_buf.clear()
-                        print("  [interrumpido]         ")
-                else:
-                    barge_cnt = max(0, barge_cnt - 2)
+                pre_buf.clear()
+                voiced    = 0
+                silence   = 0
+                recording = False
+                frames    = []
                 continue
-
-            barge_cnt = 0
 
             # Reconectar si se cayó
             if not sio.connected:
                 connect_loop()
 
-            print(f"  vol: {energy:<5}", end="\r")
-            pre_buf.append(raw)
+            if len(raw) != FRAME_BYTES:
+                continue
+
+            try:
+                is_speech = vad.is_speech(raw, SAMPLE_RATE)
+            except Exception:
+                continue
 
             # ── IDLE → RECORDING ──────────────────────────
             if not recording:
-                if energy >= ENERGY_TH:
-                    onset += 1
-                    if onset >= ONSET_CHUNKS:
+                pre_buf.append(raw)
+                if is_speech:
+                    voiced += 1
+                    if voiced >= ONSET_FRAMES:
                         recording = True
-                        frames    = list(pre_buf)  # incluir pre-buffer
+                        frames    = list(pre_buf)
                         silence   = 0
-                        onset     = 0
-                        print("  [grabando...]          ", end="\r")
+                        voiced    = 0
+                        print("  [grabando...]   ", end="\r")
                 else:
-                    onset = max(0, onset - 1)
+                    voiced = max(0, voiced - 1)
 
             # ── RECORDING ────────────────────────────────
             else:
                 frames.append(raw)
-
-                if energy < ENERGY_TH:
+                if not is_speech:
                     silence += 1
                 else:
                     silence = 0
 
-                too_long = len(frames) > int(MAX_RECORD_S * SAMPLE_RATE / CHUNK)
-                end_of_speech = silence >= SILENCE_CHUNKS
-
-                if end_of_speech or too_long:
+                if silence >= SILENCE_FRAMES or len(frames) >= MAX_FRAMES:
                     recording = False
-                    onset     = 0
+                    voiced    = 0
                     captured  = frames[:]
                     frames    = []
                     pre_buf.clear()
 
                     if len(captured) < MIN_FRAMES:
-                        continue  # muy corto, ignorar
+                        continue
 
-                    audio_bytes = b''.join(captured)
-
-                    def _process(ab):
-                        print("  transcribiendo...      ", end="\r")
-                        text = transcribe(ab)
+                    def _process(fs):
+                        print("  transcribiendo...", end="\r")
+                        text = transcribe(whisper, fs)
                         if not text:
-                            print("  ...                    ", end="\r")
+                            print("  ...              ", end="\r")
                             return
 
-                        print(f"  oído: '{text}'           ")
+                        print(f"  oído: '{text}'")
 
                         if any(p in text.lower() for p in STOP_PHRASES):
                             print("Hasta luego.")
@@ -331,12 +330,12 @@ def main():
                         print(f"Vos: {text}")
                         beep()
                         sio.emit("user_message", {
-                            "text": text,
+                            "text":      text,
                             "sessionId": SESSION_ID,
                             "voiceMode": True
                         })
 
-                    threading.Thread(target=_process, args=(audio_bytes,),
+                    threading.Thread(target=_process, args=(captured,),
                                      daemon=True).start()
 
     except KeyboardInterrupt:
@@ -349,9 +348,6 @@ def main():
         if sio.connected:
             sio.disconnect()
 
-
-# MAX_RECORD_S definido aquí para evitar referencia antes de asignación
-MAX_RECORD_S = 15
 
 if __name__ == "__main__":
     main()

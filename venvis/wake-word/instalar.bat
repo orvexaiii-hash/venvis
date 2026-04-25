@@ -10,14 +10,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Instalando pipwin para PyAudio en Windows...
+echo [1/3] Instalando PyAudio...
 pip install pipwin --quiet
-
-echo [2/3] Instalando PyAudio...
 pipwin install pyaudio
 if errorlevel 1 (
-    echo Intentando instalacion alternativa de PyAudio...
     pip install pyaudio
+)
+
+echo [2/3] Instalando webrtcvad...
+pip install webrtcvad-wheels
+if errorlevel 1 (
+    pip install webrtcvad
 )
 
 echo [3/3] Instalando resto de dependencias...
@@ -25,5 +28,5 @@ pip install -r requirements.txt
 
 echo.
 echo Instalacion completa.
-echo Ejecuta iniciar.bat para arrancar VENVIS Wake Word.
+echo Ejecuta iniciar.bat para arrancar VENVIS.
 pause
