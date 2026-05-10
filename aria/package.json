@@ -9,6 +9,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.16"
+    "@whiskeysockets/baileys": "^7.0.0-rc10",
+    "qrcode-terminal": "^0.12.0"
   }
 }

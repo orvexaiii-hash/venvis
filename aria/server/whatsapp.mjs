@@ -1,10 +1,11 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
+import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import { join } from 'path'
+import qrcode from 'qrcode-terminal'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser } from './users.mjs'
 
-const AUTH_DIR   = process.env.AUTH_DIR  || join(process.cwd(), 'data', 'auth')
+const AUTH_DIR    = process.env.AUTH_DIR  || join(process.cwd(), 'data', 'auth')
 const ADMIN_PHONE = process.env.ADMIN_PHONE
 
 let sock = null
@@ -85,11 +86,18 @@ async function handleMessage(phone, text) {
 export async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
-  sock = makeWASocket({ auth: state, printQRInTerminal: true })
+  sock = makeWASocket({
+    auth: state,
+    logger: { level: 'silent', trace(){}, debug(){}, info(){}, warn(){}, error(o){ if(o?.err) console.error('[WA]', o.err.message) }, fatal(){}, child(){ return this } }
+  })
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log('\nEscaneá este QR con WhatsApp → Dispositivos vinculados → Vincular dispositivo:\n')
+      qrcode.generate(qr, { small: true })
+    }
     if (connection === 'open') console.log('[WhatsApp] Conectado.')
     if (connection === 'close') {
       const shouldReconnect = lastDisconnect?.error instanceof Boom
