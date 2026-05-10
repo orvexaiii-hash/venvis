@@ -617,13 +617,13 @@ function urlBase64ToUint8Array(base64String) {
 
 async function subscribeToPush(reg) {
   try {
-    const existing = await reg.pushManager.getSubscription()
-    if (existing) return
-
     const res = await fetch('/api/push/vapid-key')
     if (!res.ok) return
     const { publicKey } = await res.json()
     if (!publicKey) return
+
+    const existing = await reg.pushManager.getSubscription()
+    if (existing) await existing.unsubscribe()
 
     const permission = await Notification.requestPermission()
     if (permission !== 'granted') return
@@ -637,6 +637,7 @@ async function subscribeToPush(reg) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sub)
     })
+    console.log('[Push] Suscripción registrada')
   } catch (err) {
     console.error('[Push]', err)
   }

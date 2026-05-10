@@ -69,6 +69,15 @@ app.post('/api/push/subscribe', (req, res) => {
   }
 })
 
+app.get('/api/push/test', async (_req, res) => {
+  try {
+    await sendNotification('VENVIS', 'Notificación de prueba ✓')
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ── Health ────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
   try {
