@@ -1,18 +1,66 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
-import { Boom } from '@hapi/boom'
-import { join } from 'path'
-import qrcode from 'qrcode-terminal'
+import pkg from 'whatsapp-web.js'
+import { exec } from 'child_process'
+import { createServer } from 'http'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser } from './users.mjs'
 
-const AUTH_DIR    = process.env.AUTH_DIR  || join(process.cwd(), 'data', 'auth')
+const { Client, LocalAuth } = pkg
+
+const AUTH_DIR    = process.env.AUTH_DIR  || './data/auth'
 const ADMIN_PHONE = process.env.ADMIN_PHONE
 
-let sock = null
+let client = null
+let startupTime = 0
 
-export async function sendMessage(phone, text) {
-  if (!sock) return
-  await sock.sendMessage(`${phone}@s.whatsapp.net`, { text })
+// ── QR server (SSE) ─────────────────────────────────────
+let currentQR = null
+const sseClients = new Set()
+let qrServerStarted = false
+
+const qrServer = createServer((req, res) => {
+  if (req.url === '/events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+    sseClients.add(res)
+    if (currentQR) res.write(`data: ${currentQR}\n\n`)
+    req.on('close', () => sseClients.delete(res))
+    return
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+  res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Aria QR</title>
+<style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;background:#111;color:#fff}
+#c{border-radius:12px}p{opacity:.7;margin-top:12px}#status{margin-top:8px;color:#4caf50;font-weight:bold}</style></head>
+<body><h2>Escaneá con WhatsApp</h2><canvas id="c"></canvas>
+<p>Dispositivos vinculados → Vincular dispositivo</p><div id="status">Esperando QR...</div>
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+<script>
+const es = new EventSource('/events')
+es.onmessage = e => {
+  QRCode.toCanvas(document.getElementById('c'), e.data, {width:320,color:{dark:'#000',light:'#fff'}})
+  document.getElementById('status').textContent = 'QR listo — escanealo ahora!'
+}
+</script></body></html>`)
+})
+
+function startQRServer() {
+  if (qrServerStarted) return
+  qrServerStarted = true
+  qrServer.listen(8765, () => {
+    console.log('\n[Aria] Escaneá el QR en: http://localhost:8765\n')
+    exec('start "" "http://localhost:8765"')
+  })
+}
+
+function broadcastQR(qrData) {
+  currentQR = qrData
+  for (const c of sseClients) c.write(`data: ${qrData}\n\n`)
+}
+
+// ── Message handling ─────────────────────────────────────
+export async function sendMessage(chatId, text) {
+  if (!client) return
+  const fullId = chatId.includes('@') ? chatId : `${chatId}@c.us`
+  const chat = await client.getChatById(fullId)
+  await chat.sendMessage(text)
 }
 
 async function handleAdminCommand(text, replyFn) {
@@ -25,35 +73,32 @@ async function handleAdminCommand(text, replyFn) {
     const code = createActivationCode(phone)
     return replyFn(`Código para ${phone}: ${code}\nExpira en 48 horas.`)
   }
-
   if (cmd === '/listar-usuarios') {
     const users = listUsers()
     if (!users.length) return replyFn('No hay usuarios registrados.')
     const lines = users.map(u => `${u.phone} | ${u.name || 'sin nombre'} | ${u.active ? 'activo' : 'pendiente'}`)
     return replyFn(lines.join('\n'))
   }
-
   if (cmd === '/desactivar') {
     const phone = parts[1]
     if (!phone) return replyFn('Uso: /desactivar <numero>')
     deactivateUser(phone)
     return replyFn(`Usuario ${phone} desactivado.`)
   }
-
   return replyFn('Comandos: /generar-codigo <num> | /listar-usuarios | /desactivar <num>')
 }
 
-async function handleMessage(phone, text) {
-  const replyFn = (msg) => sendMessage(phone, msg)
+async function handleMessage(msg) {
+  const phone = msg._phone
+  const text  = msg.body
+  const replyFn = (txt) => msg.reply(txt)
 
-  // Admin commands
-  if (phone === ADMIN_PHONE && text.startsWith('/')) {
+  if (ADMIN_PHONE && phone.includes(ADMIN_PHONE) && text.startsWith('/')) {
     return handleAdminCommand(text, replyFn)
   }
 
   const user = getUser(phone)
 
-  // First contact — create pending record, notify admin
   if (!user) {
     createActivationCode(phone)
     await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
@@ -63,7 +108,6 @@ async function handleMessage(phone, text) {
     return
   }
 
-  // Awaiting activation
   if (!user.active) {
     const result = activateUser(phone, text.trim().toUpperCase())
     if (result.success) return replyFn('Código válido! Para terminar, decime: ¿cómo te llamás?')
@@ -71,58 +115,67 @@ async function handleMessage(phone, text) {
     return replyFn('Código incorrecto. Verificá que lo hayas copiado bien.')
   }
 
-  // Awaiting name (onboarding)
   if (!user.name) {
     const name = text.trim()
     setUserName(phone, name)
     return replyFn(`Hola ${name}! Tu agenda ya está activa.\nPodés decirme cosas como "recordame el dentista mañana a las 15" o "guardá mi DNI: 12345678". ¿En qué te ayudo?`)
   }
 
-  // Normal conversation
   const reply = await chat(phone, text)
   return replyFn(reply)
 }
 
+// ── WhatsApp client ──────────────────────────────────────
 export async function startWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+  startQRServer()
 
-  sock = makeWASocket({
-    auth: state,
-    logger: { level: 'silent', trace(){}, debug(){}, info(){}, warn(){}, error(o){ if(o?.err) console.error('[WA]', o.err.message) }, fatal(){}, child(){ return this } }
-  })
-
-  sock.ev.on('creds.update', saveCreds)
-
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      console.log('\nEscaneá este QR con WhatsApp → Dispositivos vinculados → Vincular dispositivo:\n')
-      qrcode.generate(qr, { small: true })
-    }
-    if (connection === 'open') console.log('[WhatsApp] Conectado.')
-    if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error instanceof Boom
-        ? lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut
-        : true
-      console.log('[WhatsApp] Desconectado. Reconectar:', shouldReconnect)
-      if (shouldReconnect) startWhatsApp()
+  client = new Client({
+    authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process'
+      ]
     }
   })
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    for (const msg of messages) {
-      if (msg.key.fromMe || !msg.message) continue
-      const jid = msg.key.remoteJid
-      if (jid.endsWith('@g.us')) continue
-      const phone = jid.replace('@s.whatsapp.net', '')
-      const text  = msg.message?.conversation
-                 || msg.message?.extendedTextMessage?.text
-      if (!text) continue
+  client.on('qr', (qr) => {
+    broadcastQR(qr)
+    console.log('[Aria] QR generado — abrí http://localhost:8765 para escanearlo')
+  })
 
-      try {
-        await handleMessage(phone, text)
-      } catch (err) {
-        console.error('[WhatsApp] Error:', err.message)
-      }
+  client.on('ready', () => {
+    console.log('[WhatsApp] Conectado.')
+    currentQR = null
+    startupTime = Math.floor(Date.now() / 1000)
+  })
+
+  client.on('disconnected', (reason) => {
+    console.log('[WhatsApp] Desconectado:', reason)
+  })
+
+  client.on('message', async (msg) => {
+    if (msg.fromMe) return
+    if (msg.timestamp < startupTime) return
+    if (msg.from.endsWith('@g.us')) return
+    if (!msg.body) return
+    try {
+      // Use full chatId as stable identifier (handles both @c.us and @lid)
+      msg._phone = msg.from
+      console.log(`[MSG] phone=${msg._phone} body=${msg.body.substring(0, 50)}`)
+      await handleMessage(msg)
+    } catch (err) {
+      console.error('[WhatsApp] Error:', err.message, err.stack)
     }
   })
+
+  await client.initialize()
 }
