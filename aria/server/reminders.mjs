@@ -60,6 +60,14 @@ export function listReminders(phone) {
   `).all(phone)
 }
 
+export function getReminderById(id, phone) {
+  return db.prepare('SELECT * FROM reminders WHERE id = ? AND phone = ?').get(id, phone)
+}
+
+export function updateReminderGCalId(id, gcalEventId) {
+  db.prepare('UPDATE reminders SET gcal_event_id = ? WHERE id = ?').run(gcalEventId, id)
+}
+
 export function deleteReminder(id, phone) {
   db.prepare('DELETE FROM reminders WHERE id = ? AND phone = ?').run(id, phone)
 }

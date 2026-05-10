@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { saveMemory, getAllMemories } from './memory.mjs'
-import { saveReminder, saveRecurringReminder, listReminders, deleteReminder } from './reminders.mjs'
+import { saveReminder, saveRecurringReminder, listReminders, deleteReminder, getReminderById, updateReminderGCalId } from './reminders.mjs'
 import { getUser } from './users.mjs'
+import { isConfigured as gcalConfigured, isConnected as gcalConnected, getAuthUrl, createEvent as gcalCreate, deleteEvent as gcalDelete } from './gcal.mjs'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const MODEL = 'claude-haiku-4-5-20251001'
@@ -82,25 +83,39 @@ const TOOLS = [
       },
       required: ['id']
     }
+  },
+  {
+    name: 'link_google_calendar',
+    description: 'Genera el enlace para que el usuario conecte su Google Calendar. Usalo cuando el usuario pida conectar o vincular Google Calendar.',
+    input_schema: { type: 'object', properties: {} }
   }
 ]
 
-function buildSystemPrompt(userName) {
+function buildSystemPrompt(userName, phone) {
   const name = userName || 'amigo'
   const now = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+  const gcalStatus = gcalConfigured()
+    ? (gcalConnected(phone) ? 'Google Calendar: conectado.' : 'Google Calendar: no conectado (el usuario puede pedirte conectarlo).')
+    : ''
   return `Sos Aria, una asistente personal de agenda. Hablás en español argentino, de forma natural y amigable. Sin markdown. Sin emojis en exceso.
-Fecha y hora actual: ${now}. El usuario se llama ${name}.
+Fecha y hora actual: ${now}. El usuario se llama ${name}. ${gcalStatus}
 Respondés en máximo 2-3 oraciones cortas. Cuando usás herramientas, confirmás el resultado brevemente.`
 }
 
 async function executeTool(phone, name, input) {
   switch (name) {
-    case 'save_reminder':
-      saveReminder(phone, input.text, input.remind_at)
+    case 'save_reminder': {
+      const id = saveReminder(phone, input.text, input.remind_at)
+      const gcalId = await gcalCreate(phone, input.text, input.remind_at).catch(() => null)
+      if (gcalId) updateReminderGCalId(id, gcalId)
       return { success: true }
-    case 'save_recurring_reminder':
-      saveRecurringReminder(phone, input.text, input.first_remind_at, input.recurrence)
+    }
+    case 'save_recurring_reminder': {
+      const id = saveRecurringReminder(phone, input.text, input.first_remind_at, input.recurrence)
+      const gcalId = await gcalCreate(phone, input.text, input.first_remind_at).catch(() => null)
+      if (gcalId) updateReminderGCalId(id, gcalId)
       return { success: true }
+    }
     case 'save_memory':
       saveMemory(phone, input.key, input.value)
       return { success: true }
@@ -111,25 +126,41 @@ async function executeTool(phone, name, input) {
     }
     case 'list_reminders':
       return { reminders: listReminders(phone) }
-    case 'delete_reminder':
+    case 'delete_reminder': {
+      const reminder = getReminderById(input.id, phone)
       deleteReminder(input.id, phone)
+      if (reminder?.gcal_event_id) await gcalDelete(phone, reminder.gcal_event_id).catch(() => null)
       return { success: true }
+    }
+    case 'link_google_calendar':
+      if (!gcalConfigured()) return { error: 'Google Calendar no está configurado en el servidor.' }
+      return { url: getAuthUrl(phone) }
     default:
       return { error: 'unknown tool' }
   }
 }
 
-export async function chat(phone, userMessage) {
+export async function chat(phone, userMessage, image = null) {
   const user = getUser(phone)
   const history = getHistory(phone)
 
-  history.push({ role: 'user', content: userMessage })
+  if (image) {
+    history.push({
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: image.mimetype, data: image.data } },
+        { type: 'text', text: userMessage || 'Analizá esta imagen.' }
+      ]
+    })
+  } else {
+    history.push({ role: 'user', content: userMessage })
+  }
   trimHistory(phone)
 
   let response = await client.messages.create({
     model: MODEL,
     max_tokens: 512,
-    system: buildSystemPrompt(user?.name),
+    system: buildSystemPrompt(user?.name, phone),
     tools: TOOLS,
     messages: history
   })
@@ -147,7 +178,7 @@ export async function chat(phone, userMessage) {
     response = await client.messages.create({
       model: MODEL,
       max_tokens: 512,
-      system: buildSystemPrompt(user?.name),
+      system: buildSystemPrompt(user?.name, phone),
       tools: TOOLS,
       messages: history
     })

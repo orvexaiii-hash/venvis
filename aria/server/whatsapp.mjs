@@ -3,6 +3,7 @@ import { exec } from 'child_process'
 import { createServer } from 'http'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser } from './users.mjs'
+import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 
 const { Client, LocalAuth } = pkg
 
@@ -17,7 +18,28 @@ let currentQR = null
 const sseClients = new Set()
 let qrServerStarted = false
 
-const qrServer = createServer((req, res) => {
+const qrServer = createServer(async (req, res) => {
+  if (req.url.startsWith('/auth/google/callback') && gcalConfigured()) {
+    const params = new URL(req.url, 'http://localhost').searchParams
+    const code  = params.get('code')
+    const state = params.get('state')
+    if (code && state) {
+      try {
+        const phone = await gcalCallback(code, state)
+        await sendMessage(phone, '¡Google Calendar conectado! Tus próximos recordatorios se van a guardar ahí automaticamente.')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end('<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>✓ Google Calendar conectado</h2><p>Ya podés cerrar esta ventana y volver a WhatsApp.</p></body></html>')
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' })
+        res.end('Error: ' + err.message)
+      }
+    } else {
+      res.writeHead(400, { 'Content-Type': 'text/plain' })
+      res.end('Faltan parámetros')
+    }
+    return
+  }
+
   if (req.url === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
     sseClients.add(res)
@@ -121,7 +143,7 @@ async function handleMessage(msg) {
     return replyFn(`Hola ${name}! Tu agenda ya está activa.\nPodés decirme cosas como "recordame el dentista mañana a las 15" o "guardá mi DNI: 12345678". ¿En qué te ayudo?`)
   }
 
-  const reply = await chat(phone, text)
+  const reply = await chat(phone, text, msg._image ?? null)
   return replyFn(reply)
 }
 
@@ -166,11 +188,16 @@ export async function startWhatsApp() {
     if (msg.fromMe) return
     if (msg.timestamp < startupTime) return
     if (msg.from.endsWith('@g.us')) return
-    if (!msg.body) return
+    if (!msg.body && !msg.hasMedia) return
     try {
-      // Use full chatId as stable identifier (handles both @c.us and @lid)
       msg._phone = msg.from
-      console.log(`[MSG] phone=${msg._phone} body=${msg.body.substring(0, 50)}`)
+      if (msg.hasMedia) {
+        const media = await msg.downloadMedia()
+        if (media && media.mimetype.startsWith('image/')) {
+          msg._image = { data: media.data, mimetype: media.mimetype }
+        }
+      }
+      console.log(`[MSG] phone=${msg._phone} image=${!!msg._image} body=${(msg.body || '').substring(0, 50)}`)
       await handleMessage(msg)
     } catch (err) {
       console.error('[WhatsApp] Error:', err.message, err.stack)

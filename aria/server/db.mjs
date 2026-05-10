@@ -28,6 +28,7 @@ db.exec(`
     remind_at TEXT NOT NULL,
     recurrence TEXT,
     done INTEGER DEFAULT 0,
+    gcal_event_id TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (phone) REFERENCES users(phone)
   );
@@ -42,4 +43,15 @@ db.exec(`
     UNIQUE(phone, key),
     FOREIGN KEY (phone) REFERENCES users(phone)
   );
+
+  CREATE TABLE IF NOT EXISTS google_tokens (
+    phone TEXT PRIMARY KEY,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expiry INTEGER,
+    FOREIGN KEY (phone) REFERENCES users(phone)
+  );
 `)
+
+// Migrate: add gcal_event_id to existing reminders table if missing
+try { db.exec('ALTER TABLE reminders ADD COLUMN gcal_event_id TEXT') } catch (_) {}
