@@ -16,6 +16,7 @@ let startupTime = 0
 
 // ── QR server (SSE) ─────────────────────────────────────
 let currentQR = null
+let lastError = null
 const sseClients = new Set()
 let qrServerStarted = false
 
@@ -59,22 +60,31 @@ const qrServer = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
     sseClients.add(res)
     if (currentQR) res.write(`data: ${currentQR}\n\n`)
+    if (lastError) res.write(`event: error\ndata: ${lastError}\n\n`)
     req.on('close', () => sseClients.delete(res))
     return
   }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
   res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Aria QR</title>
 <style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;background:#111;color:#fff}
-#c{border-radius:12px}p{opacity:.7;margin-top:12px}#status{margin-top:8px;color:#4caf50;font-weight:bold}</style></head>
+#c{border-radius:12px}p{opacity:.7;margin-top:12px}#status{margin-top:8px;color:#4caf50;font-weight:bold}#err{margin-top:12px;color:#f44;font-size:13px;max-width:500px;word-break:break-all;display:none}</style></head>
 <body><h2>Escaneá con WhatsApp</h2><canvas id="c"></canvas>
-<p>Dispositivos vinculados → Vincular dispositivo</p><div id="status">Esperando QR...</div>
+<p>Dispositivos vinculados → Vincular dispositivo</p><div id="status">Esperando QR...</div><div id="err"></div>
 <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 <script>
 const es = new EventSource('/events')
 es.onmessage = e => {
   QRCode.toCanvas(document.getElementById('c'), e.data, {width:320,color:{dark:'#000',light:'#fff'}})
   document.getElementById('status').textContent = 'QR listo — escanealo ahora!'
+  document.getElementById('err').style.display='none'
 }
+es.addEventListener('error', e => {
+  const el = document.getElementById('err')
+  el.textContent = 'Error: ' + e.data
+  el.style.display = 'block'
+  document.getElementById('status').textContent = 'Chromium falló'
+  document.getElementById('status').style.color = '#f44'
+})
 </script></body></html>`)
 })
 
@@ -89,7 +99,13 @@ function startQRServer() {
 
 function broadcastQR(qrData) {
   currentQR = qrData
+  lastError = null
   for (const c of sseClients) c.write(`data: ${qrData}\n\n`)
+}
+
+function broadcastError(msg) {
+  lastError = msg
+  for (const c of sseClients) c.write(`event: error\ndata: ${msg}\n\n`)
 }
 
 // ── Message handling ─────────────────────────────────────
@@ -214,6 +230,7 @@ export async function startWhatsApp() {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
+        '--single-process',
         '--disable-gpu',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process'
@@ -256,5 +273,11 @@ export async function startWhatsApp() {
     }
   })
 
-  await client.initialize()
+  try {
+    await client.initialize()
+  } catch (err) {
+    console.error('[WhatsApp] initialize() falló:', err.message)
+    broadcastError(err.message)
+    setTimeout(() => startWhatsApp(), 5000)
+  }
 }
