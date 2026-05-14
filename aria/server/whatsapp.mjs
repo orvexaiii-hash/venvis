@@ -116,8 +116,9 @@ async function handleAdminCommand(text, replyFn) {
   const cmd   = parts[0]
 
   if (cmd === '/generar-codigo') {
-    const phone = parts[1]
+    let phone = parts[1]
     if (!phone) return replyFn('Uso: /generar-codigo <numero>')
+    if (!phone.includes('@')) phone = phone + '@lid'
     const code = createActivationCode(phone)
     return replyFn(`Código para ${phone}: ${code}\nExpira en 48 horas.`)
   }
