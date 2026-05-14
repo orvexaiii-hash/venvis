@@ -54,3 +54,11 @@ export function isAdmin(phone) {
   const user = db.prepare('SELECT is_admin FROM users WHERE phone = ?').get(phone)
   return user?.is_admin === 1
 }
+
+export function promoteToAdmin(phone) {
+  db.prepare(`
+    INSERT INTO users (phone, active, is_admin)
+    VALUES (?, 1, 1)
+    ON CONFLICT(phone) DO UPDATE SET active = 1, is_admin = 1
+  `).run(phone)
+}

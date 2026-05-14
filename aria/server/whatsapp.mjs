@@ -2,7 +2,7 @@ import pkg from 'whatsapp-web.js'
 import { exec } from 'child_process'
 import { createServer } from 'http'
 import { chat } from './brain.mjs'
-import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin } from './users.mjs'
+import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 
 const { Client, LocalAuth } = pkg
@@ -125,6 +125,14 @@ async function handleMessage(msg) {
   const phone = msg._phone
   const text  = msg.body
   const replyFn = (txt) => msg.reply(txt)
+
+  if (text && text.startsWith('/admin ') && process.env.ADMIN_SECRET) {
+    const secret = text.trim().split(/\s+/)[1]
+    if (secret === process.env.ADMIN_SECRET) {
+      promoteToAdmin(phone)
+      return replyFn('Sos admin. Usá /listar-usuarios para empezar.')
+    }
+  }
 
   if (isAdmin(phone) && text.startsWith('/')) {
     return handleAdminCommand(text, replyFn)
