@@ -144,9 +144,12 @@ body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;min-heigh
 #login button{padding:10px 24px;border-radius:8px;border:none;background:#25d366;color:#000;font-weight:700;font-size:15px;cursor:pointer;width:260px}
 #login .err{color:#f44;font-size:13px}
 #app{display:none;padding:20px}
-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px}
 h1{font-size:20px;font-weight:700}
 #notif{background:#25d366;color:#000;padding:6px 14px;border-radius:20px;font-size:13px;font-weight:600;display:none}
+#stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;font-size:13px}
+#stats span{padding:4px 12px;border-radius:12px;background:#1a1a1a;font-weight:600}
+.s-active{color:#25d366}.s-inactive{color:#f44}.s-expired{color:#ff9944}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th{text-align:left;padding:10px 8px;border-bottom:1px solid #222;color:#888;font-weight:500}
 td{padding:10px 8px;border-bottom:1px solid #1a1a1a;vertical-align:middle}
@@ -163,9 +166,18 @@ button.btn{padding:4px 12px;border-radius:6px;border:none;cursor:pointer;font-si
 .btn-red{background:#c0392b;color:#fff}
 .btn-blue{background:#2980b9;color:#fff}
 .btn-gray{background:#333;color:#aaa}
+.btn-logout{padding:6px 16px;border-radius:8px;border:none;background:#222;color:#888;cursor:pointer;font-size:13px;font-weight:600}
+.btn-logout:hover{background:#333;color:#fff}
 .name-input{background:transparent;border:none;border-bottom:1px solid #333;color:#e0e0e0;font-size:14px;width:120px;padding:2px 4px}
 .name-input:focus{outline:none;border-bottom-color:#25d366}
-@media(max-width:600px){table{font-size:12px}th:nth-child(3),td:nth-child(3){display:none}}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:999}
+.modal-overlay.open{display:flex}
+.modal{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:24px;width:360px;max-width:92vw}
+.modal h3{font-size:16px;margin-bottom:8px}
+.modal p{color:#aaa;font-size:14px;margin-bottom:16px;line-height:1.5}
+.modal-inp{width:100%;padding:8px 12px;border-radius:6px;border:1px solid #333;background:#111;color:#fff;font-size:14px;margin-bottom:16px}
+.modal-btns{display:flex;gap:8px;justify-content:flex-end}
+@media(max-width:600px){table{font-size:12px}th:nth-child(7),td:nth-child(7){display:none}}
 </style>
 </head><body>
 
@@ -179,8 +191,12 @@ button.btn{padding:4px 12px;border-radius:6px;border:none;cursor:pointer;font-si
 <div id="app">
   <header>
     <h1>Aria — Panel Admin</h1>
-    <div id="notif">📱 Nuevo usuario!</div>
+    <div style="display:flex;gap:12px;align-items:center">
+      <div id="notif">📱 Nuevo usuario!</div>
+      <button class="btn-logout" onclick="logout()">Salir</button>
+    </div>
   </header>
+  <div id="stats"></div>
   <table>
     <thead><tr>
       <th>Teléfono</th>
@@ -189,45 +205,112 @@ button.btn{padding:4px 12px;border-radius:6px;border:none;cursor:pointer;font-si
       <th>Estado</th>
       <th>Pago</th>
       <th>Vence</th>
+      <th>Ingreso</th>
       <th>Acciones</th>
     </tr></thead>
     <tbody id="tbody"></tbody>
   </table>
 </div>
 
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p id="modal-msg"></p>
+    <input class="modal-inp" id="modal-inp" type="text">
+    <div class="modal-btns">
+      <button class="btn btn-gray" onclick="closeModal(null)">Cancelar</button>
+      <button class="btn btn-red" id="modal-ok">Confirmar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let users = []
+let _res = null
+
+function openModal({title, msg, confirmLabel, confirmClass, inputVal}) {
+  return new Promise(resolve => {
+    _res = resolve
+    document.getElementById('modal-title').textContent = title
+    document.getElementById('modal-msg').textContent = msg
+    const inp = document.getElementById('modal-inp')
+    const ok  = document.getElementById('modal-ok')
+    if (inputVal !== undefined) { inp.style.display='block'; inp.value=inputVal; setTimeout(()=>inp.focus(),50) }
+    else inp.style.display='none'
+    ok.textContent = confirmLabel||'Confirmar'
+    ok.className = 'btn '+(confirmClass||'btn-red')
+    document.getElementById('modal').classList.add('open')
+  })
+}
+function closeModal(val) {
+  document.getElementById('modal').classList.remove('open')
+  if (_res) { _res(val); _res=null }
+}
+document.getElementById('modal-ok').addEventListener('click', () => {
+  const inp = document.getElementById('modal-inp')
+  closeModal(inp.style.display!=='none' ? inp.value : true)
+})
+document.getElementById('modal').addEventListener('click', e => { if(e.target===e.currentTarget) closeModal(null) })
+
+function dedup(list) {
+  const map = new Map()
+  for (const u of list) {
+    const bare = u.phone.replace(/@.+$/, '')
+    const prev = map.get(bare)
+    if (!prev || !u.phone.includes('@')) map.set(bare, {...u, phone: bare})
+  }
+  return [...map.values()]
+}
+
+function fmtDate(s) { return s ? s.slice(0,10) : '—' }
+
+function updateStats(list) {
+  const now = new Date()
+  const active   = list.filter(u => u.active && (!u.paid_until || new Date(u.paid_until)>=now)).length
+  const inactive = list.filter(u => !u.active).length
+  const expired  = list.filter(u => u.active && u.paid_until && new Date(u.paid_until)<now).length
+  let h = \`<span class="s-active">● \${active} activo\${active!==1?'s':''}</span>\`
+         +\`<span class="s-inactive">● \${inactive} inactivo\${inactive!==1?'s':''}</span>\`
+  if (expired) h += \`<span class="s-expired">● \${expired} vencido\${expired!==1?'s':''}</span>\`
+  document.getElementById('stats').innerHTML = h
+}
 
 async function login() {
   const pwd = document.getElementById('pwd').value
-  const r = await fetch('/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) })
+  const r = await fetch('/admin/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pwd})})
   if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; loadUsers(); startSSE() }
-  else { document.getElementById('login-err').textContent = 'Contraseña incorrecta' }
+  else document.getElementById('login-err').textContent = 'Contraseña incorrecta'
+}
+
+function logout() {
+  document.cookie = 'ap=; Max-Age=0; Path=/'
+  location.reload()
 }
 
 async function loadUsers() {
   const r = await fetch('/admin/api/users')
   if (!r.ok) return
-  users = await r.json()
+  users = dedup(await r.json())
   render()
 }
 
 function payLabel(u) {
   if (!u.paid_until) return '<span class="badge no-pay">Sin configurar</span>'
   const exp = new Date(u.paid_until) < new Date()
-  return \`<span class="badge \${exp ? 'expired' : 'paid'}">\${exp ? 'Vencido' : 'Al día'}</span>\`
+  return \`<span class="badge \${exp?'expired':'paid'}">\${exp?'Vencido':'Al día'}</span>\`
 }
 
 function render() {
-  const tbody = document.getElementById('tbody')
-  tbody.innerHTML = users.map(u => \`
-    <tr id="row-\${u.phone.replace(/[^a-z0-9]/gi,'_')}">
-      <td>\${u.phone}</td>
+  updateStats(users)
+  document.getElementById('tbody').innerHTML = users.map(u => \`
+    <tr>
+      <td style="font-family:monospace;font-size:13px">\${u.phone}</td>
       <td><input class="name-input" data-phone="\${u.phone}" value="\${u.display_name||''}" placeholder="Agregar nombre" onkeydown="if(event.key==='Enter'){saveName(this);this.blur()}" onblur="saveName(this)"></td>
-      <td>\${u.name || '—'}</td>
-      <td><span class="badge \${u.active ? 'active' : 'inactive'}">\${u.active ? 'Activo' : 'Inactivo'}</span></td>
+      <td>\${u.name||'—'}</td>
+      <td><span class="badge \${u.active?'active':'inactive'}">\${u.active?'Activo':'Inactivo'}</span></td>
       <td>\${payLabel(u)}</td>
-      <td>\${u.paid_until ? u.paid_until.slice(0,10) : '—'}</td>
+      <td>\${fmtDate(u.paid_until)}</td>
+      <td style="color:#555;font-size:12px">\${fmtDate(u.created_at)}</td>
       <td class="actions">
         \${u.active
           ? '<button class="btn btn-red" onclick="disable(\\''+u.phone+'\\')">Desactivar</button>'
@@ -249,14 +332,14 @@ async function disable(phone) {
 }
 async function markPaid(phone) {
   const d = new Date(); d.setDate(d.getDate()+30)
-  const until = d.toISOString().slice(0,10)
-  const custom = prompt('Fecha de vencimiento (YYYY-MM-DD):', until)
-  if (!custom) return
-  await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/pay', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({until: custom})})
+  const val = await openModal({title:'Marcar como pagado', msg:'Fecha de vencimiento (YYYY-MM-DD):', confirmLabel:'Guardar', confirmClass:'btn-blue', inputVal:d.toISOString().slice(0,10)})
+  if (!val) return
+  await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/pay', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({until:val})})
   loadUsers()
 }
 async function removeUser(phone) {
-  if (!confirm('¿Borrar ' + phone + '? No se puede deshacer.')) return
+  const ok = await openModal({title:'Borrar usuario', msg:'¿Borrar '+phone+'? Esta acción no se puede deshacer.', confirmLabel:'Borrar'})
+  if (!ok) return
   await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/delete', {method:'POST'})
   loadUsers()
 }
@@ -265,9 +348,9 @@ async function saveName(input) {
   const phone = input.dataset.phone
   const name = input.value.trim()
   input.style.borderBottomColor = '#888'
-  await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/name', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})})
+  await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/name', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})
   input.style.borderBottomColor = '#25d366'
-  setTimeout(() => input.style.borderBottomColor = '#333', 1500)
+  setTimeout(() => input.style.borderBottomColor='#333', 1500)
 }
 
 function startSSE() {
@@ -275,16 +358,15 @@ function startSSE() {
   es.onmessage = e => {
     const d = JSON.parse(e.data)
     const notif = document.getElementById('notif')
-    notif.textContent = '📱 Nuevo usuario: ' + d.phone
+    notif.textContent = '📱 Nuevo usuario: '+d.phone
     notif.style.display = 'inline-block'
     setTimeout(() => notif.style.display='none', 8000)
     loadUsers()
   }
 }
 
-// Auto-check if already logged in
 fetch('/admin/api/users').then(r => {
-  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; r.json().then(u => { users=u; render() }); startSSE() }
+  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; r.json().then(u=>{users=dedup(u);render()}); startSSE() }
 })
 </script>
 </body></html>`
