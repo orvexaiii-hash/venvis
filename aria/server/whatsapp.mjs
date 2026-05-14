@@ -1,4 +1,5 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
+import pkg from '@whiskeysockets/baileys'
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = pkg
 import { Boom } from '@hapi/boom'
 import { createServer } from 'http'
 import { rmSync } from 'fs'
@@ -240,7 +241,6 @@ export async function startWhatsApp() {
       let imageData = null
       if (msg.message?.imageMessage) {
         try {
-          const { downloadMediaMessage } = await import('@whiskeysockets/baileys')
           const buffer = await downloadMediaMessage(msg, 'buffer', {})
           imageData = { data: buffer.toString('base64'), mimetype: msg.message.imageMessage.mimetype }
         } catch (_) {}
