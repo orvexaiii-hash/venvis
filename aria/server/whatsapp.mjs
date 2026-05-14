@@ -163,7 +163,7 @@ async function handleMessage(phone, text, imageData, replyFn) {
 
   if (!user) {
     createActivationCode(phone)
-    await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
+    await replyFn('Hola! 👋 Soy Aria, tu asistente personal con IA.\nYa registré tu número — el administrador va a activar tu cuenta pronto. Te aviso cuando esté lista!')
     broadcastNewUser(phone)
     for (const admin of listUsers().filter(u => u.is_admin)) {
       await sendMessage(admin.phone, `📱 Nuevo usuario quiere activarse.\nMandá: /habilitar-numero ${phone}`)
@@ -177,17 +177,7 @@ async function handleMessage(phone, text, imageData, replyFn) {
   }
 
   if (!user.active) {
-    const code = (text || '').trim().toUpperCase()
-    if (!code.startsWith('ARIA-')) {
-      return replyFn('Tu cuenta está pausada. Si ya tenés un código de activación, enviámelo. Si no, contactá al administrador.')
-    }
-    const result = activateUser(phone, code)
-    if (result.success) {
-      if (user.name) return replyFn(`Bienvenido de nuevo, ${user.name}! Tu cuenta está activa otra vez. ¿En qué te ayudo?`)
-      return replyFn('Código válido! Para terminar, decime: ¿cómo te llamás?')
-    }
-    if (result.reason === 'expired') return replyFn('Ese código expiró. Pedí uno nuevo al administrador.')
-    return replyFn('Código incorrecto. Verificá que lo hayas copiado bien.')
+    return replyFn('Hola! 👋 Tu cuenta todavía está pendiente de activación por el administrador. Te avisamos cuando esté lista!')
   }
 
   if (!user.name) {
