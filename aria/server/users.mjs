@@ -62,3 +62,16 @@ export function promoteToAdmin(phone) {
     ON CONFLICT(phone) DO UPDATE SET active = 1, is_admin = 1
   `).run(phone)
 }
+
+export function activateUserDirect(phoneFragment) {
+  const normalized = phoneFragment.includes('@') ? phoneFragment : phoneFragment + '@lid'
+  const result = db.prepare('UPDATE users SET active = 1 WHERE phone = ?').run(normalized)
+  if (result.changes > 0) return { success: true, phone: normalized }
+  // fallback: try partial match on phone column
+  const user = db.prepare("SELECT phone FROM users WHERE phone LIKE ? LIMIT 1").get('%' + phoneFragment + '%')
+  if (user) {
+    db.prepare('UPDATE users SET active = 1 WHERE phone = ?').run(user.phone)
+    return { success: true, phone: user.phone }
+  }
+  return { success: false }
+}

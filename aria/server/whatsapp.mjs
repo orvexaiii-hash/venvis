@@ -3,7 +3,7 @@ import { exec } from 'child_process'
 import { createServer } from 'http'
 import { rmSync } from 'fs'
 import { chat } from './brain.mjs'
-import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin } from './users.mjs'
+import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 
 const { Client, LocalAuth } = pkg
@@ -128,13 +128,20 @@ async function handleAdminCommand(text, replyFn) {
     const lines = users.map(u => `${u.phone} | ${u.name || 'sin nombre'} | ${u.active ? 'activo' : 'pendiente'}`)
     return replyFn(lines.join('\n'))
   }
+  if (cmd === '/habilitar-numero') {
+    const phone = parts[1]
+    if (!phone) return replyFn('Uso: /habilitar-numero <numero>')
+    const r = activateUserDirect(phone)
+    if (r.success) return replyFn(`Usuario ${r.phone} habilitado.`)
+    return replyFn(`No encontré ese número. Asegurate que ya le haya escrito al bot primero.`)
+  }
   if (cmd === '/desactivar') {
     const phone = parts[1]
     if (!phone) return replyFn('Uso: /desactivar <numero>')
     deactivateUser(phone)
     return replyFn(`Usuario ${phone} desactivado.`)
   }
-  return replyFn('Comandos: /generar-codigo <num> | /listar-usuarios | /desactivar <num>')
+  return replyFn('Comandos: /habilitar-numero <num> | /generar-codigo <num> | /listar-usuarios | /desactivar <num>')
 }
 
 async function handleMessage(msg) {
@@ -161,7 +168,8 @@ async function handleMessage(msg) {
     createActivationCode(phone)
     await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
     for (const admin of listUsers().filter(u => u.is_admin)) {
-      await sendMessage(admin.phone, `📱 Nuevo usuario: ${phone} quiere activarse.\nUsá /generar-codigo ${phone}`)
+      const id = phone.replace('@lid', '').replace('@c.us', '')
+      await sendMessage(admin.phone, `📱 Nuevo usuario quiere activarse.\nMandá: /habilitar-numero ${id}`)
     }
     return
   }
