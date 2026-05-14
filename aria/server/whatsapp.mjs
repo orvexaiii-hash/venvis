@@ -1,6 +1,7 @@
 import pkg from 'whatsapp-web.js'
 import { exec } from 'child_process'
 import { createServer } from 'http'
+import { rmSync } from 'fs'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
@@ -36,6 +37,20 @@ const qrServer = createServer(async (req, res) => {
     } else {
       res.writeHead(400, { 'Content-Type': 'text/plain' })
       res.end('Faltan parámetros')
+    }
+    return
+  }
+
+  if (req.url === '/api/reset-session') {
+    try {
+      if (client) { try { await client.destroy() } catch (_) {} client = null }
+      try { rmSync(AUTH_DIR + '/session', { recursive: true, force: true }) } catch (_) {}
+      res.writeHead(200, { 'Content-Type': 'text/plain' })
+      res.end('Session reset. Restarting...')
+      setTimeout(() => startWhatsApp(), 1000)
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' })
+      res.end('Error: ' + err.message)
     }
     return
   }
