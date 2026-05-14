@@ -1,7 +1,7 @@
 import pkg from 'whatsapp-web.js'
 import { exec } from 'child_process'
 import { createServer } from 'http'
-import { rmSync } from 'fs'
+import { rmSync, existsSync } from 'fs'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
@@ -218,11 +218,15 @@ async function handleMessage(msg) {
 export async function startWhatsApp() {
   startQRServer()
 
+  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH
+  const executablePath = (envPath && existsSync(envPath)) ? envPath : undefined
+  if (envPath && !executablePath) console.warn(`[Aria] PUPPETEER_EXECUTABLE_PATH=${envPath} no existe, usando Chrome de puppeteer`)
+
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
     puppeteer: {
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
