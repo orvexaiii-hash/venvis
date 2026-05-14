@@ -68,7 +68,7 @@ function startQRServer() {
   qrServerStarted = true
   qrServer.listen(8765, () => {
     console.log('\n[Aria] Escaneá el QR en: http://localhost:8765\n')
-    exec('start "" "http://localhost:8765"')
+    if (process.platform === 'win32') exec('start "" "http://localhost:8765"')
   })
 }
 
@@ -173,6 +173,7 @@ export async function startWhatsApp() {
     authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
     puppeteer: {
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
