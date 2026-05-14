@@ -63,6 +63,20 @@ export function promoteToAdmin(phone) {
   `).run(phone)
 }
 
+export function setPaidUntil(phone, date) {
+  db.prepare('UPDATE users SET paid_until = ? WHERE phone = ?').run(date, phone)
+}
+
+export function setDisplayName(phone, name) {
+  db.prepare('UPDATE users SET display_name = ? WHERE phone = ?').run(name, phone)
+}
+
+export function isPaymentExpired(phone) {
+  const user = db.prepare('SELECT paid_until FROM users WHERE phone = ?').get(phone)
+  if (!user || !user.paid_until) return false
+  return new Date(user.paid_until) < new Date()
+}
+
 export function activateUserDirect(phoneFragment) {
   const normalized = phoneFragment.includes('@') ? phoneFragment : phoneFragment + '@lid'
   const result = db.prepare('UPDATE users SET active = 1 WHERE phone = ?').run(normalized)

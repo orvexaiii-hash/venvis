@@ -4,8 +4,9 @@ import { createServer } from 'http'
 import { rmSync } from 'fs'
 import { join } from 'path'
 import { chat } from './brain.mjs'
-import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
+import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, isAdmin, promoteToAdmin, activateUserDirect, isPaymentExpired } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
+import { handleAdminRequest, broadcastNewUser } from './admin.mjs'
 
 const AUTH_DIR = process.env.AUTH_DIR || join(process.cwd(), 'data', 'auth')
 
@@ -52,6 +53,10 @@ const qrServer = createServer(async (req, res) => {
       res.end('Error: ' + err.message)
     }
     return
+  }
+
+  if (req.url.startsWith('/admin')) {
+    return handleAdminRequest(req, res)
   }
 
   if (req.url === '/events') {
@@ -159,10 +164,16 @@ async function handleMessage(phone, text, imageData, replyFn) {
   if (!user) {
     createActivationCode(phone)
     await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
+    broadcastNewUser(phone)
     for (const admin of listUsers().filter(u => u.is_admin)) {
       await sendMessage(admin.phone, `📱 Nuevo usuario quiere activarse.\nMandá: /habilitar-numero ${phone}`)
     }
     return
+  }
+
+  if (user.active && isPaymentExpired(phone)) {
+    deactivateUser(phone)
+    return replyFn('Tu suscripción venció. Contactá al administrador para renovarla.')
   }
 
   if (!user.active) {

@@ -56,3 +56,5 @@ db.exec(`
 // Migrations
 try { db.exec('ALTER TABLE reminders ADD COLUMN gcal_event_id TEXT') } catch (_) {}
 try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0') } catch (_) {}
+try { db.exec('ALTER TABLE users ADD COLUMN paid_until TEXT') } catch (_) {}
+try { db.exec('ALTER TABLE users ADD COLUMN display_name TEXT') } catch (_) {}
