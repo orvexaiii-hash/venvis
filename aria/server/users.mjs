@@ -35,7 +35,16 @@ export function setUserName(phone, name) {
 }
 
 export function getUser(phone) {
-  return db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) || null
+  const exact = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone)
+  if (exact) return exact
+  // Fallback: find old @lid / @s.whatsapp.net variant and migrate it
+  const bare = phone.replace(/@.+$/, '')
+  const old = db.prepare("SELECT * FROM users WHERE phone LIKE ? LIMIT 1").get(bare + '@%')
+  if (old) {
+    db.prepare('UPDATE users SET phone = ? WHERE phone = ?').run(phone, old.phone)
+    return db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) || null
+  }
+  return null
 }
 
 export function listUsers() {
