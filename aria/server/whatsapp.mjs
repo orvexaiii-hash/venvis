@@ -1,7 +1,8 @@
 import pkg from 'whatsapp-web.js'
-import { exec } from 'child_process'
+import { exec, execFileSync } from 'child_process'
 import { createServer } from 'http'
-import { rmSync, existsSync } from 'fs'
+import { rmSync, existsSync, readdirSync } from 'fs'
+import { join } from 'path'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
@@ -214,19 +215,55 @@ async function handleMessage(msg) {
   return replyFn(reply)
 }
 
+function findChromePath() {
+  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH
+  if (envPath && existsSync(envPath)) return envPath
+
+  const candidates = [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ]
+  for (const c of candidates) { if (existsSync(c)) return c }
+
+  try {
+    const base = '/app/node_modules/puppeteer'
+    if (existsSync(base)) {
+      const result = execFileSync('find', [base, '-name', 'chrome', '-type', 'f'], { timeout: 5000 }).toString().trim()
+      const first = result.split('\n')[0]
+      if (first) return first
+    }
+  } catch (_) {}
+
+  return null
+}
+
 // ── WhatsApp client ──────────────────────────────────────
 export async function startWhatsApp() {
   startQRServer()
 
-  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH
-  const executablePath = (envPath && existsSync(envPath)) ? envPath : undefined
-  if (envPath && !executablePath) console.warn(`[Aria] PUPPETEER_EXECUTABLE_PATH=${envPath} no existe, usando Chrome de puppeteer`)
+  const executablePath = findChromePath()
+  console.log('[Aria] Chrome path:', executablePath || 'NO ENCONTRADO — puppeteer buscará por defecto')
+
+  if (executablePath) {
+    try {
+      const ver = execFileSync(executablePath, ['--version', '--no-sandbox'], { timeout: 5000 }).toString().trim()
+      console.log('[Aria] Chrome version:', ver)
+    } catch (e) {
+      const msg = `Chrome en ${executablePath} falló: ${e.message}`
+      console.error('[Aria]', msg)
+      broadcastError(msg)
+      setTimeout(() => startWhatsApp(), 8000)
+      return
+    }
+  }
 
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
     puppeteer: {
       headless: true,
-      executablePath,
+      executablePath: executablePath || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -276,8 +313,9 @@ export async function startWhatsApp() {
   try {
     await client.initialize()
   } catch (err) {
-    console.error('[WhatsApp] initialize() falló:', err.message)
-    broadcastError(err.message)
-    setTimeout(() => startWhatsApp(), 5000)
+    const detail = `${err.message} | chrome=${executablePath || 'default'}`
+    console.error('[WhatsApp] initialize() falló:', detail)
+    broadcastError(detail)
+    setTimeout(() => startWhatsApp(), 8000)
   }
 }
