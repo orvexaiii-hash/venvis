@@ -5,6 +5,7 @@ import { rmSync } from 'fs'
 import { join } from 'path'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, isAdmin, promoteToAdmin, activateUserDirect, isPaymentExpired } from './users.mjs'
+import { saveImage } from './image-store.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 import { handleAdminRequest, broadcastNewUser } from './admin.mjs'
 
@@ -145,7 +146,7 @@ async function handleAdminCommand(text, replyFn) {
 }
 
 // ── Message handling ─────────────────────────────────────
-async function handleMessage(phone, text, imageData, replyFn) {
+async function handleMessage(phone, text, imageData, imageId, replyFn, sendImageFn) {
   if (text && text.startsWith('/admin ')) {
     const secret = text.trim().split(/\s+/)[1]
     const adminKey = process.env.ADMIN_SECRET || 'aria-admin-2026'
@@ -180,14 +181,11 @@ async function handleMessage(phone, text, imageData, replyFn) {
     return replyFn('Hola! 👋 Tu cuenta todavía está pendiente de activación por el administrador. Te avisamos cuando esté lista!')
   }
 
-  if (!user.name) {
-    const name = (text || '').trim()
-    setUserName(phone, name)
-    return replyFn(`Hola ${name}! Tu agenda ya está activa.\nPodés decirme cosas como "recordame el dentista mañana a las 15" o "guardá mi DNI: 12345678". ¿En qué te ayudo?`)
+  const { text: reply, imagesToSend } = await chat(phone, text, imageData, imageId)
+  await replyFn(reply)
+  for (const img of imagesToSend) {
+    try { await sendImageFn(img) } catch (err) { console.error('[sendImage] Error:', err.message) }
   }
-
-  const reply = await chat(phone, text, imageData)
-  return replyFn(reply)
 }
 
 // ── WhatsApp client ──────────────────────────────────────
@@ -239,16 +237,20 @@ export async function startWhatsApp() {
       const replyFn = (txt) => sock.sendMessage(jid, { text: txt }, { quoted: msg })
 
       let imageData = null
+      let imageId = null
       if (msg.message?.imageMessage) {
         try {
           const buffer = await downloadMediaMessage(msg, 'buffer', {})
-          imageData = { data: buffer.toString('base64'), mimetype: msg.message.imageMessage.mimetype }
+          const mimetype = msg.message.imageMessage.mimetype || 'image/jpeg'
+          imageData = { data: buffer.toString('base64'), mimetype }
+          imageId = saveImage(phone, buffer, mimetype)
         } catch (_) {}
       }
 
+      const sendImageFn = (img) => sock.sendMessage(jid, { image: img.buffer, mimetype: img.mimetype })
       console.log(`[MSG] phone=${phone} image=${!!imageData} body=${text.substring(0, 50)}`)
       try {
-        await handleMessage(phone, text, imageData, replyFn)
+        await handleMessage(phone, text, imageData, imageId, replyFn, sendImageFn)
       } catch (err) {
         console.error('[WhatsApp] Error:', err.message)
       }

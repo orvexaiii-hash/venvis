@@ -1,24 +1,45 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { saveMemory, getAllMemories } from './memory.mjs'
 import { saveReminder, saveRecurringReminder, listReminders, deleteReminder, getReminderById, updateReminderGCalId } from './reminders.mjs'
-import { getUser } from './users.mjs'
+import { getUser, setUserName } from './users.mjs'
+import { db } from './db.mjs'
+import { getImage } from './image-store.mjs'
 import { isConfigured as gcalConfigured, isConnected as gcalConnected, getAuthUrl, createEvent as gcalCreate, deleteEvent as gcalDelete } from './gcal.mjs'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const MODEL = 'claude-haiku-4-5-20251001'
 
-const histories = new Map()
+// ── Persistent history (DB-backed, in-memory cache) ──────
+const historyCache = new Map()
 
-function getHistory(phone) {
-  if (!histories.has(phone)) histories.set(phone, [])
-  return histories.get(phone)
+function loadHistory(phone) {
+  if (historyCache.has(phone)) return historyCache.get(phone)
+  const rows = db.prepare(
+    'SELECT role, content FROM chat_messages WHERE phone = ? ORDER BY id ASC'
+  ).all(phone)
+  const history = rows.map(r => {
+    try { return { role: r.role, content: JSON.parse(r.content) } } catch { return null }
+  }).filter(Boolean)
+  historyCache.set(phone, history)
+  return history
+}
+
+function saveHistory(phone) {
+  const history = historyCache.get(phone) || []
+  const last20 = history.slice(-20)
+  db.prepare('DELETE FROM chat_messages WHERE phone = ?').run(phone)
+  const stmt = db.prepare('INSERT INTO chat_messages (phone, role, content) VALUES (?, ?, ?)')
+  for (const msg of last20) {
+    stmt.run(phone, msg.role, JSON.stringify(msg.content))
+  }
 }
 
 function trimHistory(phone) {
-  const h = getHistory(phone)
+  const h = loadHistory(phone)
   if (h.length > 20) h.splice(0, h.length - 20)
 }
 
+// ── Tools ────────────────────────────────────────────────
 const TOOLS = [
   {
     name: 'save_reminder',
@@ -27,7 +48,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         text:      { type: 'string', description: 'Descripción del recordatorio' },
-        remind_at: { type: 'string', description: 'ISO 8601, ej: 2026-05-10T15:00:00Z' }
+        remind_at: { type: 'string', description: 'ISO 8601, ej: 2026-05-10T15:00:00-03:00' }
       },
       required: ['text', 'remind_at']
     }
@@ -47,11 +68,11 @@ const TOOLS = [
   },
   {
     name: 'save_memory',
-    description: 'Guarda un dato importante del usuario: DNI, contraseña, dirección, nota, etc.',
+    description: 'Guarda un dato importante del usuario: DNI, contraseña, dirección, presupuesto, etc. Para guardar referencia a una imagen enviada por el usuario, usá key="img_[descripcion]" y value=imageId.',
     input_schema: {
       type: 'object',
       properties: {
-        key:   { type: 'string', description: 'Etiqueta corta, ej: "DNI", "contraseña Netflix"' },
+        key:   { type: 'string', description: 'Etiqueta corta, ej: "DNI", "contraseña Netflix", "img_presupuesto_premium"' },
         value: { type: 'string', description: 'El valor a guardar' }
       },
       required: ['key', 'value']
@@ -88,20 +109,52 @@ const TOOLS = [
     name: 'link_google_calendar',
     description: 'Genera el enlace para que el usuario conecte su Google Calendar. Usalo cuando el usuario pida conectar o vincular Google Calendar.',
     input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'update_name',
+    description: 'Guarda o actualiza el nombre del usuario. Usalo cuando el usuario te diga su nombre por primera vez o quiera cambiarlo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Nombre del usuario' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'list_saved_images',
+    description: 'Lista las imágenes guardadas por el usuario con sus IDs y descripciones.',
+    input_schema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'retrieve_image',
+    description: 'Envía al usuario una imagen guardada anteriormente. Usá list_saved_images para obtener el image_id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: 'ID de la imagen (obtenido de list_saved_images)' }
+      },
+      required: ['image_id']
+    }
   }
 ]
 
-function buildSystemPrompt(userName, phone) {
-  const name = userName || 'amigo'
-  const now = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })
+// ── System prompt ─────────────────────────────────────────
+function buildSystemPrompt(userName, phone, timezone) {
+  const tz = timezone || 'America/Argentina/Buenos_Aires'
+  const now = new Date().toLocaleString('es-AR', { timeZone: tz })
   const gcalStatus = gcalConfigured()
     ? (gcalConnected(phone) ? 'Google Calendar: conectado.' : 'Google Calendar: no conectado (el usuario puede pedirte conectarlo).')
     : ''
+  const nameInstr = !userName
+    ? 'El usuario todavía no te dijo su nombre. Presentate brevemente como Aria y preguntale cómo se llama. Cuando te diga, usá update_name para guardarlo.'
+    : `El usuario se llama ${userName}.`
   return `Sos Aria, una asistente personal de agenda. Hablás en español argentino, de forma natural y amigable. Sin markdown. Sin emojis en exceso.
-Fecha y hora actual: ${now}. El usuario se llama ${name}. ${gcalStatus}
+Fecha y hora actual: ${now} (zona horaria: ${tz}). ${nameInstr} ${gcalStatus}
 Respondés en máximo 2-3 oraciones cortas. Cuando usás herramientas, confirmás el resultado brevemente.`
 }
 
+// ── Tool execution ────────────────────────────────────────
 async function executeTool(phone, name, input) {
   switch (name) {
     case 'save_reminder': {
@@ -135,21 +188,43 @@ async function executeTool(phone, name, input) {
     case 'link_google_calendar':
       if (!gcalConfigured()) return { error: 'Google Calendar no está configurado en el servidor.' }
       return { url: getAuthUrl(phone) }
+    case 'update_name': {
+      const formatted = input.name.trim().replace(/\b\w/g, c => c.toUpperCase())
+      setUserName(phone, formatted)
+      return { success: true }
+    }
+    case 'list_saved_images': {
+      const all = getAllMemories(phone)
+      const imgs = all.filter(m => m.key.startsWith('img_'))
+      if (!imgs.length) return { images: [], message: 'No hay imágenes guardadas.' }
+      return { images: imgs.map(m => ({ id: m.value, description: m.key.replace(/^img_/, '') })) }
+    }
+    case 'retrieve_image': {
+      const img = getImage(phone, input.image_id)
+      if (!img) return { error: 'Imagen no encontrada. Usá list_saved_images para ver las disponibles.' }
+      return { success: true, __image: img }
+    }
     default:
       return { error: 'unknown tool' }
   }
 }
 
-export async function chat(phone, userMessage, image = null) {
+// ── Chat ──────────────────────────────────────────────────
+export async function chat(phone, userMessage, image = null, imageId = null) {
   const user = getUser(phone)
-  const history = getHistory(phone)
+  const history = loadHistory(phone)
+  const imagesToSend = []
+
+  const imageNote = imageId
+    ? ` [Imagen recibida guardada en disco con id: "${imageId}". Si querés guardar referencia para recuperarla luego, usá save_memory con key="img_[descripcion]" y value="${imageId}".]`
+    : ''
 
   if (image) {
     history.push({
       role: 'user',
       content: [
         { type: 'image', source: { type: 'base64', media_type: image.mimetype, data: image.data } },
-        { type: 'text', text: userMessage || 'Analizá esta imagen.' }
+        { type: 'text', text: (userMessage || 'Analizá esta imagen.') + imageNote }
       ]
     })
   } else {
@@ -157,35 +232,61 @@ export async function chat(phone, userMessage, image = null) {
   }
   trimHistory(phone)
 
-  let response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 512,
-    system: buildSystemPrompt(user?.name, phone),
-    tools: TOOLS,
-    messages: history
-  })
+  try {
+    // Reload user so name reflects any update_name call from a prior message
+    let currentName = user?.name
+    const tz = user?.timezone
 
-  while (response.stop_reason === 'tool_use') {
-    const toolBlock = response.content.find(b => b.type === 'tool_use')
-    const result = await executeTool(phone, toolBlock.name, toolBlock.input)
-
-    history.push({ role: 'assistant', content: response.content })
-    history.push({
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: toolBlock.id, content: JSON.stringify(result) }]
-    })
-
-    response = await client.messages.create({
+    let response = await client.messages.create({
       model: MODEL,
       max_tokens: 512,
-      system: buildSystemPrompt(user?.name, phone),
+      system: buildSystemPrompt(currentName, phone, tz),
       tools: TOOLS,
       messages: history
     })
-  }
 
-  const text = response.content.find(b => b.type === 'text')?.text ?? ''
-  history.push({ role: 'assistant', content: text })
-  trimHistory(phone)
-  return text
+    while (response.stop_reason === 'tool_use') {
+      const toolBlocks = response.content.filter(b => b.type === 'tool_use')
+      const results = await Promise.all(toolBlocks.map(b => executeTool(phone, b.name, b.input)))
+
+      // Collect images; strip __image from tool results before sending back to Claude
+      const cleanResults = results.map(r => {
+        if (r.__image) { imagesToSend.push(r.__image); const { __image, ...rest } = r; return rest }
+        return r
+      })
+
+      // Refresh name if update_name was called
+      if (toolBlocks.some(b => b.name === 'update_name')) {
+        currentName = getUser(phone)?.name
+      }
+
+      history.push({ role: 'assistant', content: response.content })
+      history.push({
+        role: 'user',
+        content: toolBlocks.map((b, i) => ({
+          type: 'tool_result',
+          tool_use_id: b.id,
+          content: JSON.stringify(cleanResults[i])
+        }))
+      })
+
+      response = await client.messages.create({
+        model: MODEL,
+        max_tokens: 512,
+        system: buildSystemPrompt(currentName, phone, tz),
+        tools: TOOLS,
+        messages: history
+      })
+    }
+
+    const text = response.content.find(b => b.type === 'text')?.text ?? ''
+    history.push({ role: 'assistant', content: text })
+    trimHistory(phone)
+    saveHistory(phone)
+    return { text, imagesToSend }
+
+  } catch (err) {
+    console.error('[brain] Error:', err.message)
+    return { text: 'Lo siento, tuve un problema técnico. Intentá de nuevo en un momento.', imagesToSend: [] }
+  }
 }
