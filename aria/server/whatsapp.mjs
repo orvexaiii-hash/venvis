@@ -1,5 +1,4 @@
-import pkg from '@whiskeysockets/baileys'
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = pkg
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import { createServer } from 'http'
 import { rmSync } from 'fs'
