@@ -39,9 +39,18 @@ export function getUser(phone) {
 }
 
 export function listUsers() {
-  return db.prepare('SELECT phone, name, active, created_at FROM users ORDER BY created_at DESC').all()
+  return db.prepare('SELECT phone, name, active, is_admin, created_at FROM users ORDER BY created_at DESC').all()
 }
 
 export function deactivateUser(phone) {
   db.prepare('UPDATE users SET active = 0 WHERE phone = ?').run(phone)
+}
+
+export function makeAdmin(phone) {
+  db.prepare('UPDATE users SET is_admin = 1 WHERE phone = ?').run(phone)
+}
+
+export function isAdmin(phone) {
+  const user = db.prepare('SELECT is_admin FROM users WHERE phone = ?').get(phone)
+  return user?.is_admin === 1
 }

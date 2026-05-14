@@ -2,7 +2,7 @@ import pkg from 'whatsapp-web.js'
 import { exec } from 'child_process'
 import { createServer } from 'http'
 import { chat } from './brain.mjs'
-import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser } from './users.mjs'
+import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 
 const { Client, LocalAuth } = pkg
@@ -126,7 +126,7 @@ async function handleMessage(msg) {
   const text  = msg.body
   const replyFn = (txt) => msg.reply(txt)
 
-  if (ADMIN_PHONE && phone.includes(ADMIN_PHONE) && text.startsWith('/')) {
+  if (isAdmin(phone) && text.startsWith('/')) {
     return handleAdminCommand(text, replyFn)
   }
 
@@ -135,8 +135,8 @@ async function handleMessage(msg) {
   if (!user) {
     createActivationCode(phone)
     await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
-    if (ADMIN_PHONE) {
-      await sendMessage(ADMIN_PHONE, `📱 Nuevo usuario: ${phone} quiere activarse.\nUsá /generar-codigo ${phone}`)
+    for (const admin of listUsers().filter(u => u.is_admin)) {
+      await sendMessage(admin.phone, `📱 Nuevo usuario: ${phone} quiere activarse.\nUsá /generar-codigo ${phone}`)
     }
     return
   }

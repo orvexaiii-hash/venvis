@@ -53,5 +53,6 @@ db.exec(`
   );
 `)
 
-// Migrate: add gcal_event_id to existing reminders table if missing
+// Migrations
 try { db.exec('ALTER TABLE reminders ADD COLUMN gcal_event_id TEXT') } catch (_) {}
+try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0') } catch (_) {}
