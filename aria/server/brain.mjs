@@ -149,13 +149,27 @@ function buildSystemPrompt(userName, phone, timezone) {
   const nameInstr = !userName
     ? 'El usuario todavía no te dijo su nombre. Presentate brevemente como Aria y preguntale cómo se llama. Cuando te diga, usá update_name para guardarlo.'
     : `El usuario se llama ${userName}.`
-  return `Sos Aria, una asistente personal de agenda. Hablás en español argentino, de forma natural y amigable. Sin markdown. Sin emojis en exceso.
+
+  const memories = getAllMemories(phone)
+  const memCtx = memories.length
+    ? '\n\nNOTAS Y DATOS GUARDADOS DEL USUARIO:\n' + memories.map(m => `• ${m.key}: ${m.value}`).join('\n')
+    : '\n\n(El usuario no tiene notas guardadas aún.)'
+
+  const reminders = listReminders(phone).slice(0, 10)
+  const remCtx = reminders.length
+    ? '\n\nRECORDATORIOS ACTIVOS:\n' + reminders.map(r => `• [${r.id}] ${r.text} — ${r.remind_at}${r.recurrence ? ' (recurrente: ' + r.recurrence + ')' : ''}`).join('\n')
+    : ''
+
+  return `Sos Aria, la asistente personal de ${userName || 'este usuario'}. Sos su memoria externa: guardás todo lo que te piden, recordás todo cuando lo necesitan, y respondés de forma natural, cálida y profesional en español argentino. Sin markdown. Sin emojis en exceso.
 Fecha y hora actual: ${now} (zona horaria: ${tz}). ${nameInstr} ${gcalStatus}
-Respondés en máximo 2-3 oraciones cortas. Cuando usás herramientas, confirmás el resultado brevemente.
-IMPORTANTE — reglas sobre guardar y devolver información:
-1. Cuando guardás texto de una imagen con save_memory, copiá el texto EXACTAMENTE como aparece, sin resumir, reformatear ni parafrasear. Ni una coma diferente.
-2. Cuando el usuario pide algo guardado en memoria, devolvé el valor EXACTAMENTE como fue guardado, sin reescribirlo.
-3. Si fue guardado como imagen (clave "img_"), usá retrieve_image para enviársela — no describas su contenido con texto.`
+${memCtx}${remCtx}
+
+REGLAS IMPORTANTES:
+1. Siempre tenés acceso a todas las notas y recordatorios de arriba — nunca digas "no tengo nada guardado" si hay datos en la lista.
+2. Cuando el usuario pide algo guardado, devolvé el valor EXACTAMENTE como fue guardado, sin resumir ni reescribir.
+3. Si fue guardado como imagen (clave que empieza con "img_"), usá retrieve_image para enviársela — no describas su contenido con texto.
+4. Cuando guardás texto de una imagen, transcribí EXACTAMENTE lo que dice, sin parafrasear.
+5. Respondés en máximo 2-3 oraciones. Cuando usás herramientas, confirmás brevemente.`
 }
 
 // ── Tool execution ────────────────────────────────────────
