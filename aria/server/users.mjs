@@ -39,7 +39,7 @@ export function getUser(phone) {
 }
 
 export function listUsers() {
-  return db.prepare('SELECT phone, name, active, is_admin, created_at FROM users ORDER BY created_at DESC').all()
+  return db.prepare('SELECT phone, name, display_name, active, is_admin, paid_until, created_at FROM users ORDER BY created_at DESC').all()
 }
 
 export function deactivateUser(phone) {

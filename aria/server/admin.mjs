@@ -214,7 +214,7 @@ function render() {
   tbody.innerHTML = users.map(u => \`
     <tr id="row-\${u.phone.replace(/[^a-z0-9]/gi,'_')}">
       <td>\${u.phone}</td>
-      <td><input class="name-input" value="\${u.display_name||''}" placeholder="Nombre" onblur="saveName('\${u.phone}', this.value)"></td>
+      <td><input class="name-input" data-phone="\${u.phone}" value="\${u.display_name||''}" placeholder="Agregar nombre" onkeydown="if(event.key==='Enter'){saveName(this);this.blur()}" onblur="saveName(this)"></td>
       <td>\${u.name || '—'}</td>
       <td><span class="badge \${u.active ? 'active' : 'inactive'}">\${u.active ? 'Activo' : 'Inactivo'}</span></td>
       <td>\${payLabel(u)}</td>
@@ -245,8 +245,13 @@ async function markPaid(phone) {
   await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/pay', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({until: custom})})
   loadUsers()
 }
-async function saveName(phone, name) {
+async function saveName(input) {
+  const phone = input.dataset.phone
+  const name = input.value.trim()
+  input.style.borderBottomColor = '#888'
   await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/name', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})})
+  input.style.borderBottomColor = '#25d366'
+  setTimeout(() => input.style.borderBottomColor = '#333', 1500)
 }
 
 function startSSE() {
