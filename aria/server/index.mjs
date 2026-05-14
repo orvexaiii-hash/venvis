@@ -1,5 +1,5 @@
 import 'node:process'
-import { startWhatsApp, sendMessage } from './whatsapp.mjs'
+import { startWhatsApp, sendMessage, stopWhatsApp } from './whatsapp.mjs'
 import { startReminderTick, getTodayReminders } from './reminders.mjs'
 import { listUsers } from './users.mjs'
 
@@ -36,12 +36,25 @@ async function main() {
 
   startReminderTick(
     async (reminder) => {
-      await sendMessage(reminder.phone, `⏰ Recordatorio: ${reminder.text}`)
+      try {
+        await sendMessage(reminder.phone, `⏰ Recordatorio: ${reminder.text}`)
+      } catch (err) {
+        console.error(`[Reminder] Error enviando a ${reminder.phone}:`, err.message)
+      }
     },
     sendDailySummary
   )
 
   console.log('[Aria] Listo.')
 }
+
+async function shutdown(signal) {
+  console.log(`[Aria] ${signal} recibido, apagando...`)
+  await stopWhatsApp()
+  process.exit(0)
+}
+
+process.on('SIGINT',  () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
 
 main().catch(console.error)

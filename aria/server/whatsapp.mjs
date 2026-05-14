@@ -78,11 +78,22 @@ function broadcastQR(qrData) {
 }
 
 // ── Message handling ─────────────────────────────────────
+export async function stopWhatsApp() {
+  if (client) {
+    try { await client.destroy() } catch (_) {}
+    client = null
+  }
+}
+
 export async function sendMessage(chatId, text) {
   if (!client) return
-  const fullId = chatId.includes('@') ? chatId : `${chatId}@c.us`
-  const chat = await client.getChatById(fullId)
-  await chat.sendMessage(text)
+  try {
+    const fullId = chatId.includes('@') ? chatId : `${chatId}@c.us`
+    const chat = await client.getChatById(fullId)
+    await chat.sendMessage(text)
+  } catch (err) {
+    console.error(`[sendMessage] Error enviando a ${chatId}:`, err.message)
+  }
 }
 
 async function handleAdminCommand(text, replyFn) {
@@ -131,9 +142,16 @@ async function handleMessage(msg) {
   }
 
   if (!user.active) {
-    const result = activateUser(phone, text.trim().toUpperCase())
-    if (result.success) return replyFn('Código válido! Para terminar, decime: ¿cómo te llamás?')
-    if (result.reason === 'expired') return replyFn('Ese código expiró. Pedí uno nuevo.')
+    const code = text.trim().toUpperCase()
+    if (!code.startsWith('ARIA-')) {
+      return replyFn('Tu cuenta está pausada. Si ya tenés un código de activación, enviámelo. Si no, contactá al administrador.')
+    }
+    const result = activateUser(phone, code)
+    if (result.success) {
+      if (user.name) return replyFn(`Bienvenido de nuevo, ${user.name}! Tu cuenta está activa otra vez. ¿En qué te ayudo?`)
+      return replyFn('Código válido! Para terminar, decime: ¿cómo te llamás?')
+    }
+    if (result.reason === 'expired') return replyFn('Ese código expiró. Pedí uno nuevo al administrador.')
     return replyFn('Código incorrecto. Verificá que lo hayas copiado bien.')
   }
 
