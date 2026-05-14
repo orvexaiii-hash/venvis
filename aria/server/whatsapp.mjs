@@ -1,18 +1,15 @@
-import pkg from 'whatsapp-web.js'
-import { exec, execFileSync } from 'child_process'
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
+import { Boom } from '@hapi/boom'
 import { createServer } from 'http'
-import { rmSync, existsSync, readdirSync } from 'fs'
+import { rmSync } from 'fs'
 import { join } from 'path'
 import { chat } from './brain.mjs'
-import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, makeAdmin, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
+import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, isAdmin, promoteToAdmin, activateUserDirect } from './users.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 
-const { Client, LocalAuth } = pkg
+const AUTH_DIR = process.env.AUTH_DIR || join(process.cwd(), 'data', 'auth')
 
-const AUTH_DIR    = process.env.AUTH_DIR  || './data/auth'
-const ADMIN_PHONE = process.env.ADMIN_PHONE
-
-let client = null
+let sock = null
 let startupTime = 0
 
 // ── QR server (SSE) ─────────────────────────────────────
@@ -45,8 +42,8 @@ const qrServer = createServer(async (req, res) => {
 
   if (req.url === '/api/reset-session') {
     try {
-      if (client) { try { await client.destroy() } catch (_) {} client = null }
-      try { rmSync(AUTH_DIR + '/session', { recursive: true, force: true }) } catch (_) {}
+      if (sock) { try { await sock.end() } catch (_) {} sock = null }
+      try { rmSync(AUTH_DIR, { recursive: true, force: true }) } catch (_) {}
       res.writeHead(200, { 'Content-Type': 'text/plain' })
       res.end('Session reset. Restarting...')
       setTimeout(() => startWhatsApp(), 1000)
@@ -65,37 +62,27 @@ const qrServer = createServer(async (req, res) => {
     req.on('close', () => sseClients.delete(res))
     return
   }
+
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
   res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Aria QR</title>
 <style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;background:#111;color:#fff}
-#c{border-radius:12px}p{opacity:.7;margin-top:12px}#status{margin-top:8px;color:#4caf50;font-weight:bold}#err{margin-top:12px;color:#f44;font-size:13px;max-width:500px;word-break:break-all;display:none}</style></head>
+#c{border-radius:12px}p{opacity:.7;margin-top:12px}#status{margin-top:8px;color:#4caf50;font-weight:bold}</style></head>
 <body><h2>Escaneá con WhatsApp</h2><canvas id="c"></canvas>
-<p>Dispositivos vinculados → Vincular dispositivo</p><div id="status">Esperando QR...</div><div id="err"></div>
+<p>Dispositivos vinculados → Vincular dispositivo</p><div id="status">Esperando QR...</div>
 <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 <script>
 const es = new EventSource('/events')
 es.onmessage = e => {
   QRCode.toCanvas(document.getElementById('c'), e.data, {width:320,color:{dark:'#000',light:'#fff'}})
   document.getElementById('status').textContent = 'QR listo — escanealo ahora!'
-  document.getElementById('err').style.display='none'
 }
-es.addEventListener('error', e => {
-  const el = document.getElementById('err')
-  el.textContent = 'Error: ' + e.data
-  el.style.display = 'block'
-  document.getElementById('status').textContent = 'Chromium falló'
-  document.getElementById('status').style.color = '#f44'
-})
 </script></body></html>`)
 })
 
 function startQRServer() {
   if (qrServerStarted) return
   qrServerStarted = true
-  qrServer.listen(8765, () => {
-    console.log('\n[Aria] Escaneá el QR en: http://localhost:8765\n')
-    if (process.platform === 'win32') exec('start "" "http://localhost:8765"')
-  })
+  qrServer.listen(8765, () => console.log('\n[Aria] Escaneá el QR en: http://localhost:8765\n'))
 }
 
 function broadcastQR(qrData) {
@@ -104,30 +91,22 @@ function broadcastQR(qrData) {
   for (const c of sseClients) c.write(`data: ${qrData}\n\n`)
 }
 
-function broadcastError(msg) {
-  lastError = msg
-  for (const c of sseClients) c.write(`event: error\ndata: ${msg}\n\n`)
-}
-
-// ── Message handling ─────────────────────────────────────
+// ── Sending ──────────────────────────────────────────────
 export async function stopWhatsApp() {
-  if (client) {
-    try { await client.destroy() } catch (_) {}
-    client = null
-  }
+  if (sock) { try { await sock.end() } catch (_) {} sock = null }
 }
 
-export async function sendMessage(chatId, text) {
-  if (!client) return
+export async function sendMessage(phone, text) {
+  if (!sock) return
   try {
-    const fullId = chatId.includes('@') ? chatId : `${chatId}@c.us`
-    const chat = await client.getChatById(fullId)
-    await chat.sendMessage(text)
+    const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`
+    await sock.sendMessage(jid, { text })
   } catch (err) {
-    console.error(`[sendMessage] Error enviando a ${chatId}:`, err.message)
+    console.error(`[sendMessage] Error enviando a ${phone}:`, err.message)
   }
 }
 
+// ── Admin commands ───────────────────────────────────────
 async function handleAdminCommand(text, replyFn) {
   const parts = text.trim().split(/\s+/)
   const cmd   = parts[0]
@@ -135,7 +114,6 @@ async function handleAdminCommand(text, replyFn) {
   if (cmd === '/generar-codigo') {
     let phone = parts[1]
     if (!phone) return replyFn('Uso: /generar-codigo <numero>')
-    if (!phone.includes('@')) phone = phone + '@lid'
     const code = createActivationCode(phone)
     return replyFn(`Código para ${phone}: ${code}\nExpira en 48 horas.`)
   }
@@ -161,11 +139,8 @@ async function handleAdminCommand(text, replyFn) {
   return replyFn('Comandos: /habilitar-numero <num> | /generar-codigo <num> | /listar-usuarios | /desactivar <num>')
 }
 
-async function handleMessage(msg) {
-  const phone = msg._phone
-  const text  = msg.body
-  const replyFn = (txt) => msg.reply(txt)
-
+// ── Message handling ─────────────────────────────────────
+async function handleMessage(phone, text, imageData, replyFn) {
   if (text && text.startsWith('/admin ')) {
     const secret = text.trim().split(/\s+/)[1]
     const adminKey = process.env.ADMIN_SECRET || 'aria-admin-2026'
@@ -175,7 +150,7 @@ async function handleMessage(msg) {
     }
   }
 
-  if (isAdmin(phone) && text.startsWith('/')) {
+  if (isAdmin(phone) && text && text.startsWith('/')) {
     return handleAdminCommand(text, replyFn)
   }
 
@@ -185,14 +160,13 @@ async function handleMessage(msg) {
     createActivationCode(phone)
     await replyFn('Hola! Soy Aria, tu agenda personal con IA.\nPara activar tu cuenta, enviame tu código de activación.')
     for (const admin of listUsers().filter(u => u.is_admin)) {
-      const id = phone.replace('@lid', '').replace('@c.us', '')
-      await sendMessage(admin.phone, `📱 Nuevo usuario quiere activarse.\nMandá: /habilitar-numero ${id}`)
+      await sendMessage(admin.phone, `📱 Nuevo usuario quiere activarse.\nMandá: /habilitar-numero ${phone}`)
     }
     return
   }
 
   if (!user.active) {
-    const code = text.trim().toUpperCase()
+    const code = (text || '').trim().toUpperCase()
     if (!code.startsWith('ARIA-')) {
       return replyFn('Tu cuenta está pausada. Si ya tenés un código de activación, enviámelo. Si no, contactá al administrador.')
     }
@@ -206,116 +180,78 @@ async function handleMessage(msg) {
   }
 
   if (!user.name) {
-    const name = text.trim()
+    const name = (text || '').trim()
     setUserName(phone, name)
     return replyFn(`Hola ${name}! Tu agenda ya está activa.\nPodés decirme cosas como "recordame el dentista mañana a las 15" o "guardá mi DNI: 12345678". ¿En qué te ayudo?`)
   }
 
-  const reply = await chat(phone, text, msg._image ?? null)
+  const reply = await chat(phone, text, imageData)
   return replyFn(reply)
-}
-
-function findChromePath() {
-  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH
-  if (envPath && existsSync(envPath)) return envPath
-
-  const candidates = [
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-  ]
-  for (const c of candidates) { if (existsSync(c)) return c }
-
-  try {
-    const base = '/app/node_modules/puppeteer'
-    if (existsSync(base)) {
-      const result = execFileSync('find', [base, '-name', 'chrome', '-type', 'f'], { timeout: 5000 }).toString().trim()
-      const first = result.split('\n')[0]
-      if (first) return first
-    }
-  } catch (_) {}
-
-  return null
 }
 
 // ── WhatsApp client ──────────────────────────────────────
 export async function startWhatsApp() {
   startQRServer()
 
-  const executablePath = findChromePath()
-  console.log('[Aria] Chrome path:', executablePath || 'NO ENCONTRADO — puppeteer buscará por defecto')
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
-  if (executablePath) {
-    try {
-      const ver = execFileSync(executablePath, ['--version', '--no-sandbox'], { timeout: 5000 }).toString().trim()
-      console.log('[Aria] Chrome version:', ver)
-    } catch (e) {
-      const msg = `Chrome en ${executablePath} falló: ${e.message}`
-      console.error('[Aria]', msg)
-      broadcastError(msg)
-      setTimeout(() => startWhatsApp(), 8000)
-      return
+  sock = makeWASocket({
+    auth: state,
+    logger: { level: 'silent', trace(){}, debug(){}, info(){}, warn(){}, error(o){ if(o?.err) console.error('[WA]', o.err.message) }, fatal(){}, child(){ return this } },
+    browser: ['Aria', 'Chrome', '1.0.0']
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      broadcastQR(qr)
+      console.log('[Aria] QR generado')
     }
-  }
-
-  client = new Client({
-    authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
-    puppeteer: {
-      headless: true,
-      executablePath: executablePath || undefined,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--disable-extensions'
-      ]
+    if (connection === 'open') {
+      console.log('[WhatsApp] Conectado.')
+      currentQR = null
+      startupTime = Math.floor(Date.now() / 1000)
+    }
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error instanceof Boom
+        ? lastDisconnect.error.output?.statusCode !== DisconnectReason.loggedOut
+        : true
+      console.log('[WhatsApp] Desconectado. Reconectar:', shouldReconnect)
+      if (shouldReconnect) setTimeout(() => startWhatsApp(), 3000)
     }
   })
 
-  client.on('qr', (qr) => {
-    broadcastQR(qr)
-    console.log('[Aria] QR generado — abrí http://localhost:8765 para escanearlo')
-  })
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return
+    for (const msg of messages) {
+      if (msg.key.fromMe || !msg.message) continue
+      const jid = msg.key.remoteJid
+      if (!jid || jid.endsWith('@g.us')) continue
+      if ((msg.messageTimestamp || 0) < startupTime) continue
 
-  client.on('ready', () => {
-    console.log('[WhatsApp] Conectado.')
-    currentQR = null
-    startupTime = Math.floor(Date.now() / 1000)
-  })
+      const phone = jid.replace('@s.whatsapp.net', '')
+      const text  = msg.message?.conversation
+                 || msg.message?.extendedTextMessage?.text
+                 || msg.message?.imageMessage?.caption
+                 || ''
+      const replyFn = (txt) => sock.sendMessage(jid, { text: txt }, { quoted: msg })
 
-  client.on('disconnected', (reason) => {
-    console.log('[WhatsApp] Desconectado:', reason)
-  })
-
-  client.on('message', async (msg) => {
-    if (msg.fromMe) return
-    if (msg.timestamp < startupTime) return
-    if (msg.from.endsWith('@g.us')) return
-    if (!msg.body && !msg.hasMedia) return
-    try {
-      msg._phone = msg.from
-      if (msg.hasMedia) {
-        const media = await msg.downloadMedia()
-        if (media && media.mimetype.startsWith('image/')) {
-          msg._image = { data: media.data, mimetype: media.mimetype }
-        }
+      let imageData = null
+      if (msg.message?.imageMessage) {
+        try {
+          const { downloadMediaMessage } = await import('@whiskeysockets/baileys')
+          const buffer = await downloadMediaMessage(msg, 'buffer', {})
+          imageData = { data: buffer.toString('base64'), mimetype: msg.message.imageMessage.mimetype }
+        } catch (_) {}
       }
-      console.log(`[MSG] phone=${msg._phone} image=${!!msg._image} body=${(msg.body || '').substring(0, 50)}`)
-      await handleMessage(msg)
-    } catch (err) {
-      console.error('[WhatsApp] Error:', err.message, err.stack)
+
+      console.log(`[MSG] phone=${phone} image=${!!imageData} body=${text.substring(0, 50)}`)
+      try {
+        await handleMessage(phone, text, imageData, replyFn)
+      } catch (err) {
+        console.error('[WhatsApp] Error:', err.message)
+      }
     }
   })
-
-  try {
-    await client.initialize()
-  } catch (err) {
-    const detail = `${err.message} | chrome=${executablePath || 'default'}`
-    console.error('[WhatsApp] initialize() falló:', detail)
-    broadcastError(detail)
-    setTimeout(() => startWhatsApp(), 8000)
-  }
 }
