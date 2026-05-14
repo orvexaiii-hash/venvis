@@ -1,4 +1,4 @@
-import { listUsers, deactivateUser, activateUserDirect, setPaidUntil, setDisplayName } from './users.mjs'
+import { listUsers, deactivateUser, activateUserDirect, setPaidUntil, setDisplayName, deleteUser } from './users.mjs'
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'aria-admin-2026'
 
@@ -106,6 +106,15 @@ export async function handleAdminRequest(req, res) {
     const phone = decodeURIComponent(url.replace('/admin/api/users/', '').replace('/name', ''))
     const body = await parseBody(req)
     setDisplayName(phone, body.name)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+
+  // API: delete user
+  if (url.startsWith('/admin/api/users/') && url.endsWith('/delete') && req.method === 'POST') {
+    const phone = decodeURIComponent(url.replace('/admin/api/users/', '').replace('/delete', ''))
+    deleteUser(phone)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true }))
     return
@@ -224,6 +233,7 @@ function render() {
           ? '<button class="btn btn-red" onclick="disable(\\''+u.phone+'\\')">Desactivar</button>'
           : '<button class="btn btn-green" onclick="enable(\\''+u.phone+'\\')">Activar</button>'}
         <button class="btn btn-blue" onclick="markPaid('\${u.phone}')">Marcar pagado</button>
+        <button class="btn btn-gray" onclick="removeUser('\${u.phone}')">🗑</button>
       </td>
     </tr>
   \`).join('')
@@ -245,6 +255,12 @@ async function markPaid(phone) {
   await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/pay', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({until: custom})})
   loadUsers()
 }
+async function removeUser(phone) {
+  if (!confirm('¿Borrar ' + phone + '? No se puede deshacer.')) return
+  await fetch('/admin/api/users/'+encodeURIComponent(phone)+'/delete', {method:'POST'})
+  loadUsers()
+}
+
 async function saveName(input) {
   const phone = input.dataset.phone
   const name = input.value.trim()

@@ -87,14 +87,14 @@ export function isPaymentExpired(phone) {
 }
 
 export function activateUserDirect(phoneFragment) {
-  const normalized = phoneFragment.includes('@') ? phoneFragment : phoneFragment + '@lid'
-  const result = db.prepare('UPDATE users SET active = 1 WHERE phone = ?').run(normalized)
-  if (result.changes > 0) return { success: true, phone: normalized }
-  // fallback: try partial match on phone column
-  const user = db.prepare("SELECT phone FROM users WHERE phone LIKE ? LIMIT 1").get('%' + phoneFragment + '%')
-  if (user) {
-    db.prepare('UPDATE users SET active = 1 WHERE phone = ?').run(user.phone)
-    return { success: true, phone: user.phone }
-  }
+  const bare = phoneFragment.replace(/@.+$/, '')
+  // Activate ALL records matching this number (bare, @lid, @s.whatsapp.net, etc.)
+  const result = db.prepare("UPDATE users SET active = 1 WHERE phone = ? OR phone LIKE ?").run(bare, bare + '@%')
+  if (result.changes > 0) return { success: true, phone: bare }
   return { success: false }
+}
+
+export function deleteUser(phone) {
+  const bare = phone.replace(/@.+$/, '')
+  db.prepare("DELETE FROM users WHERE phone = ? OR phone LIKE ?").run(bare, bare + '@%')
 }
