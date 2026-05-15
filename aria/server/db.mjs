@@ -59,6 +59,66 @@ db.exec(`
     content TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS web_otps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL,
+    code TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    sent INTEGER DEFAULT 0,
+    used INTEGER DEFAULT 0,
+    attempts INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS exercises (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    muscle_group TEXT NOT NULL,
+    description TEXT NOT NULL,
+    image_url TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS routines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    difficulty TEXT CHECK(difficulty IN ('beginner','intermediate','advanced')),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS routine_exercises (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    routine_id INTEGER NOT NULL,
+    exercise_id INTEGER NOT NULL,
+    day_of_week TEXT NOT NULL,
+    order_index INTEGER NOT NULL,
+    sets INTEGER NOT NULL,
+    reps TEXT NOT NULL,
+    rest_seconds INTEGER,
+    FOREIGN KEY (routine_id) REFERENCES routines(id),
+    FOREIGN KEY (exercise_id) REFERENCES exercises(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_routines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL,
+    routine_id INTEGER NOT NULL,
+    active INTEGER DEFAULT 1,
+    assigned_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (phone) REFERENCES users(phone),
+    FOREIGN KEY (routine_id) REFERENCES routines(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_modules (
+    phone TEXT NOT NULL,
+    module TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    activated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (phone, module),
+    FOREIGN KEY (phone) REFERENCES users(phone)
+  );
 `)
 
 // Migrations
