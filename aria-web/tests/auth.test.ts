@@ -1,6 +1,7 @@
 import { generateOTP, signJWT, verifyJWT } from '@/lib/auth'
 
-process.env.JWT_SECRET = 'test_secret_12345678901234567890'
+beforeAll(() => { process.env.JWT_SECRET = 'test_secret_12345678901234567890' })
+afterAll(() => { delete process.env.JWT_SECRET })
 
 describe('generateOTP', () => {
   it('devuelve string de 6 dígitos', () => {
@@ -10,7 +11,7 @@ describe('generateOTP', () => {
 
   it('genera valores distintos', () => {
     const otps = new Set(Array.from({ length: 20 }, generateOTP))
-    expect(otps.size).toBeGreaterThan(15)
+    expect(otps.size).toBe(20)
   })
 })
 
