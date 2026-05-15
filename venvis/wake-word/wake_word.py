@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""VENVIS Voice Client — faster-whisper + webrtcvad"""
+"""VENVIS Voice Client — Porcupine wake word + faster-whisper + webrtcvad"""
 
 import pyaudio
 import numpy as np
 import webrtcvad
+import pvporcupine
 import socketio
 import asyncio
 import tempfile
@@ -11,10 +12,20 @@ import os
 import threading
 import ctypes
 import time
-import sys
-import signal
+import msvcrt
+import struct
 from collections import deque
 from faster_whisper import WhisperModel
+
+# ── .env ─────────────────────────────────────────────────
+_env_path = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 
 # ── INSTANCIA ÚNICA ──────────────────────────────────────
 _LOCK_FILE = os.path.join(os.path.dirname(__file__), ".venvis.pid")
@@ -52,22 +63,28 @@ atexit.register(_cleanup_lock)
 SERVER_URL  = "https://venvis.orvexautomation.com"
 SESSION_ID  = "charly"
 SAMPLE_RATE = 16000
-FRAME_MS    = 30
-FRAME_SAMP  = int(SAMPLE_RATE * FRAME_MS / 1000)   # 480 samples
-FRAME_BYTES = FRAME_SAMP * 2                         # 960 bytes
 
-VOICE       = "es-AR-TomasNeural"
-TTS_RATE    = "-5%"
-TTS_PITCH   = "-2Hz"
+VOICE     = "es-AR-TomasNeural"
+TTS_RATE  = "-5%"
+TTS_PITCH = "-2Hz"
 
-VAD_MODE       = 2    # 0-3 agresividad (2 = equilibrado)
-ONSET_FRAMES   = 5    # ~150ms de voz para iniciar grabación
+# Wake word (Porcupine)
+PORCUPINE_KEY   = os.environ.get("PORCUPINE_KEY", "")
+WAKE_WORD_PATH  = os.path.join(os.path.dirname(__file__), "venvis_windows.ppn")
+
+# VAD (usado en modo ACTIVE)
+VAD_MODE       = 3
+ONSET_FRAMES   = 6    # ~180ms de voz para iniciar grabación
 SILENCE_FRAMES = 25   # ~750ms de silencio para cortar
-PRE_FRAMES     = 10   # frames guardados antes del onset
-MIN_FRAMES     = 8    # mínimo para procesar
+PRE_FRAMES     = 10
+MIN_FRAMES     = 12
 MAX_FRAMES     = 600  # ~18s máximo
 
-STOP_PHRASES = {"detente venvis", "cerrar venvis", "apagar venvis"}
+# Timeout: segundos sin hablar antes de volver a IDLE
+FOLLOWUP_TIMEOUT = 15.0
+
+EXIT_PHRASES = {"apagar venvis", "cerrar venvis", "venvis apágate"}
+IDLE_PHRASES = {"detente venvis", "venvis chau", "venvis para", "venvis gracias"}
 # ─────────────────────────────────────────────────────────
 
 mci       = ctypes.windll.winmm
@@ -80,11 +97,14 @@ _tts_file = None
 _tts_gen  = 0
 _tts_stop = threading.Event()
 
+_mode_lock          = threading.Lock()
+_active             = False   # False = IDLE, True = ACTIVE
+_last_activity_time = 0.0
+
 
 def is_speaking():
     with _lock:
         return _speaking
-
 
 def set_speaking(val, path=None):
     global _speaking, _tts_file
@@ -92,6 +112,34 @@ def set_speaking(val, path=None):
         _speaking = val
         if path is not None:
             _tts_file = path
+
+def is_active():
+    with _mode_lock:
+        return _active
+
+def enter_active():
+    global _active, _last_activity_time
+    with _mode_lock:
+        _active = True
+        _last_activity_time = time.time()
+    beep(700, 60)
+    beep(900, 80)
+    print("\n  [VENVIS activo — hablá]                    ")
+
+def enter_idle():
+    global _active
+    with _mode_lock:
+        _active = False
+    print("  [esperando 'Venvis'...]                    ", end="\r")
+
+def touch_activity():
+    global _last_activity_time
+    with _mode_lock:
+        _last_activity_time = time.time()
+
+def activity_elapsed():
+    with _mode_lock:
+        return time.time() - _last_activity_time
 
 
 # ── TTS ──────────────────────────────────────────────────
@@ -111,9 +159,7 @@ def stop_tts():
             pass
     set_speaking(False)
 
-
 def _play_mp3(path):
-    """Reproduce MP3. Polling non-bloqueante — se corta si _tts_stop se setea."""
     abs_path = os.path.abspath(path).replace("/", "\\")
     mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
     err = mci.mciSendStringW(
@@ -132,7 +178,6 @@ def _play_mp3(path):
     mci.mciSendStringW(f'stop {TTS_ALIAS}',  None, 0, None)
     mci.mciSendStringW(f'close {TTS_ALIAS}', None, 0, None)
 
-
 async def _tts_async(text):
     import edge_tts
     clean = text.replace('\n', ' ').strip()[:600]
@@ -142,16 +187,13 @@ async def _tts_async(text):
     await comm.save(tmp)
     return tmp
 
-
 def speak(text):
-    """Genera y reproduce TTS. Generación counter evita overlap entre hilos."""
     global _tts_gen, _tts_stop
     _tts_gen += 1
     my_gen = _tts_gen
     _tts_stop.clear()
 
     def _run():
-        tmp = None
         try:
             tmp = asyncio.run(_tts_async(text))
             set_speaking(True, path=tmp)
@@ -161,9 +203,9 @@ def speak(text):
         finally:
             if _tts_gen == my_gen:
                 stop_tts()
+            touch_activity()  # reinicia timeout después de hablar
 
     threading.Thread(target=_run, daemon=True).start()
-
 
 def beep(freq=800, ms=80):
     try:
@@ -180,16 +222,13 @@ sio = socketio.Client(
     reconnection=True, reconnection_attempts=0, reconnection_delay=2
 )
 
-
 @sio.on("connect")
 def _on_connect():
-    print("  [conectado]")
-
+    print("  [conectado]                              ")
 
 @sio.on("disconnect")
 def _on_disconnect():
     print("  [reconectando...]")
-
 
 @sio.on("venvis_done")
 def _on_done(data):
@@ -199,11 +238,9 @@ def _on_done(data):
     print(f"\nVENVIS: {text}\n")
     speak(text)
 
-
 @sio.on("venvis_error")
 def _on_error(data):
     print(f"[Error] {data.get('message', '')}")
-
 
 def connect_loop():
     while True:
@@ -216,7 +253,7 @@ def connect_loop():
             time.sleep(3)
 
 
-# ── STT (faster-whisper local) ───────────────────────────
+# ── STT ──────────────────────────────────────────────────
 
 def load_model():
     print("Cargando modelo Whisper (primera vez tarda ~30s)...")
@@ -224,13 +261,32 @@ def load_model():
     print("Modelo listo.\n")
     return m
 
+_HALLUCINATIONS = {
+    'subtítulos por la comunidad de amara',
+    'subtitulos por la comunidad de amara',
+    'amara.org', 'suscríbete', 'subcríbete',
+    'comparte el video', 'gracias por ver',
+    'no olvides suscribirte', 'like y suscríbete',
+}
 
 def transcribe(whisper, frames):
     audio_bytes = b''.join(frames)
     audio_np    = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    segments, _ = whisper.transcribe(audio_np, language="es", beam_size=5)
-    text = " ".join(seg.text for seg in segments).strip()
-    return text or None
+    segments, _ = whisper.transcribe(
+        audio_np, language="es", beam_size=5,
+        no_speech_threshold=0.6,
+        condition_on_previous_text=False,
+        log_prob_threshold=-1.0,
+    )
+    parts = []
+    for seg in segments:
+        if seg.no_speech_prob > 0.6:
+            continue
+        t = seg.text.strip()
+        if any(h in t.lower() for h in _HALLUCINATIONS):
+            continue
+        parts.append(t)
+    return " ".join(parts).strip() or None
 
 
 # ── MICRÓFONO ────────────────────────────────────────────
@@ -260,6 +316,23 @@ def pick_mic(pa):
 # ── MAIN LOOP ────────────────────────────────────────────
 
 def main():
+    # Verificar Porcupine
+    if not PORCUPINE_KEY:
+        print("\n[ERROR] Falta PORCUPINE_KEY en el archivo .env")
+        print("  → Seguí las instrucciones de SETUP.md para obtenerla gratis.")
+        input("\nPresioná Enter para salir...")
+        return
+    if not os.path.exists(WAKE_WORD_PATH):
+        print(f"\n[ERROR] No encontré el archivo de wake word: {WAKE_WORD_PATH}")
+        print("  → Descargá venvis_windows.ppn y colocalo en esta carpeta.")
+        input("\nPresioná Enter para salir...")
+        return
+
+    porcupine   = pvporcupine.create(access_key=PORCUPINE_KEY, keyword_paths=[WAKE_WORD_PATH])
+    PORC_SAMP   = porcupine.frame_length   # 512 samples
+    PORC_BYTES  = PORC_SAMP * 2
+    VAD_BYTES   = 480 * 2                  # 30ms para webrtcvad
+
     print(f"Conectando a {SERVER_URL}...")
     connect_loop()
 
@@ -270,7 +343,7 @@ def main():
 
     kw = dict(rate=SAMPLE_RATE, channels=1,
               format=pyaudio.paInt16,
-              input=True, frames_per_buffer=FRAME_SAMP)
+              input=True, frames_per_buffer=PORC_SAMP)
     if mic is not None:
         kw['input_device_index'] = mic
         name = pa.get_device_info_by_index(mic)['name']
@@ -285,13 +358,47 @@ def main():
     voiced    = 0
     silence   = 0
 
-    print("VENVIS listo — hablá cuando quieras.\n")
+    print("═══════════════════════════════════════════")
+    print("  VENVIS listo — decí 'Venvis' para activar")
+    print("  Enter/Espacio interrumpen mientras habla")
+    print("═══════════════════════════════════════════\n")
+    enter_idle()
 
     try:
         while True:
-            raw = stream.read(FRAME_SAMP, exception_on_overflow=False)
+            raw = stream.read(PORC_SAMP, exception_on_overflow=False)
 
-            # Hard suppression: ignorar todo mientras VENVIS habla
+            # Interrupción con teclado (siempre disponible)
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key in (b' ', b'\r', b'\n'):
+                    if is_speaking():
+                        stop_tts()
+                        print("  [interrumpido]                          ", end="\r")
+
+            # ── MODO IDLE: detección de wake word ─────────
+            if not is_active():
+                if is_speaking():
+                    continue
+                pcm    = struct.unpack_from("h" * PORC_SAMP, raw)
+                result = porcupine.process(pcm)
+                if result >= 0:
+                    enter_active()
+                    pre_buf.clear()
+                    frames    = []
+                    recording = False
+                    voiced    = 0
+                    silence   = 0
+                continue
+
+            # ── MODO ACTIVE ───────────────────────────────
+
+            # Timeout de inactividad → volver a IDLE
+            if not recording and not is_speaking() and activity_elapsed() > FOLLOWUP_TIMEOUT:
+                enter_idle()
+                continue
+
+            # Suprimir grabación mientras VENVIS habla
             if is_speaking():
                 pre_buf.clear()
                 voiced    = 0
@@ -300,15 +407,13 @@ def main():
                 frames    = []
                 continue
 
-            # Reconectar si se cayó
             if not sio.connected:
                 connect_loop()
 
-            if len(raw) != FRAME_BYTES:
-                continue
-
+            # Porcupine lee 512 samples; VAD necesita exactamente 480
+            vad_frame = raw[:VAD_BYTES]
             try:
-                is_speech = vad.is_speech(raw, SAMPLE_RATE)
+                is_speech = vad.is_speech(vad_frame, SAMPLE_RATE)
             except Exception:
                 continue
 
@@ -322,17 +427,15 @@ def main():
                         frames    = list(pre_buf)
                         silence   = 0
                         voiced    = 0
-                        print("  [grabando...]   ", end="\r")
+                        touch_activity()
+                        print("  [grabando...]                           ", end="\r")
                 else:
                     voiced = max(0, voiced - 1)
 
             # ── RECORDING ────────────────────────────────
             else:
                 frames.append(raw)
-                if not is_speech:
-                    silence += 1
-                else:
-                    silence = 0
+                silence = 0 if is_speech else silence + 1
 
                 if silence >= SILENCE_FRAMES or len(frames) >= MAX_FRAMES:
                     recording = False
@@ -345,23 +448,29 @@ def main():
                         continue
 
                     def _process(fs):
-                        print("  transcribiendo...", end="\r")
+                        print("  transcribiendo...                       ", end="\r")
                         text = transcribe(whisper, fs)
                         if not text:
-                            print("  ...              ", end="\r")
+                            print("  ...                                     ", end="\r")
                             return
 
                         print(f"  oído: '{text}'")
+                        tl = text.lower()
 
-                        if any(p in text.lower() for p in STOP_PHRASES):
+                        if any(p in tl for p in EXIT_PHRASES):
                             print("Hasta luego.")
                             os._exit(0)
+
+                        if any(p in tl for p in IDLE_PHRASES):
+                            enter_idle()
+                            return
 
                         words = [w for w in text.split() if len(w) > 1]
                         if not words:
                             return
 
                         print(f"Vos: {text}")
+                        touch_activity()
                         beep()
                         sio.emit("user_message", {
                             "text":      text,
@@ -369,12 +478,12 @@ def main():
                             "voiceMode": True
                         })
 
-                    threading.Thread(target=_process, args=(captured,),
-                                     daemon=True).start()
+                    threading.Thread(target=_process, args=(captured,), daemon=True).start()
 
     except KeyboardInterrupt:
         print("\nDeteniendo...")
     finally:
+        porcupine.delete()
         stop_tts()
         stream.stop_stream()
         stream.close()
