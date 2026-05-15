@@ -2,6 +2,7 @@ import 'node:process'
 import { startWhatsApp, sendMessage, stopWhatsApp } from './whatsapp.mjs'
 import { startReminderTick, getTodayReminders } from './reminders.mjs'
 import { listUsers } from './users.mjs'
+import { deleteExpiredMemories } from './memory.mjs'
 
 async function sendDailySummary() {
   const TZ = 'America/Argentina/Buenos_Aires'
@@ -42,7 +43,8 @@ async function main() {
         console.error(`[Reminder] Error enviando a ${reminder.phone}:`, err.message)
       }
     },
-    sendDailySummary
+    sendDailySummary,
+    deleteExpiredMemories
   )
 
   console.log('[Aria] Listo.')

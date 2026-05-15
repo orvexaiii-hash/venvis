@@ -67,3 +67,4 @@ try { db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0') } catch
 try { db.exec('ALTER TABLE users ADD COLUMN paid_until TEXT') } catch (_) {}
 try { db.exec('ALTER TABLE users ADD COLUMN display_name TEXT') } catch (_) {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_chat_phone ON chat_messages(phone, id)') } catch (_) {}
+try { db.exec('ALTER TABLE memories ADD COLUMN expires_at TEXT') } catch (_) {}

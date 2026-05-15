@@ -68,12 +68,13 @@ const TOOLS = [
   },
   {
     name: 'save_memory',
-    description: 'Guarda un dato importante del usuario: DNI, contraseña, dirección, presupuesto, etc. Para guardar referencia a una imagen enviada por el usuario, usá key="img_[descripcion]" y value=imageId.',
+    description: 'Guarda un dato importante del usuario: DNI, contraseña, dirección, presupuesto, lista de cosas, etc. Para guardar referencia a una imagen enviada por el usuario, usá key="img_[descripcion]" y value=imageId. Si la nota es temporal (lista de compras, tarea puntual, etc.), usá expires_at con la fecha límite en ISO 8601.',
     input_schema: {
       type: 'object',
       properties: {
-        key:   { type: 'string', description: 'Etiqueta corta, ej: "DNI", "contraseña Netflix", "img_presupuesto_premium"' },
-        value: { type: 'string', description: 'El valor a guardar' }
+        key:        { type: 'string', description: 'Etiqueta corta, ej: "DNI", "contraseña Netflix", "img_presupuesto_premium"' },
+        value:      { type: 'string', description: 'El valor a guardar' },
+        expires_at: { type: 'string', description: 'Fecha/hora de vencimiento ISO 8601 (solo para notas temporales). Ej: "2026-05-20T23:59:00-03:00"' }
       },
       required: ['key', 'value']
     }
@@ -175,7 +176,10 @@ function buildSystemPrompt(userName, phone, timezone) {
 
   const memories = getAllMemories(phone)
   const memCtx = memories.length
-    ? '\n\nNOTAS Y DATOS GUARDADOS DEL USUARIO:\n' + memories.map(m => `• ${m.key}: ${m.value}`).join('\n')
+    ? '\n\nNOTAS Y DATOS GUARDADOS DEL USUARIO:\n' + memories.map(m => {
+        const expiry = m.expires_at ? ` [vence: ${m.expires_at}]` : ''
+        return `• ${m.key}: ${m.value}${expiry}`
+      }).join('\n')
     : '\n\n(El usuario no tiene notas guardadas aún.)'
 
   const reminders = listReminders(phone).slice(0, 10)
@@ -201,6 +205,7 @@ Siempre tenés acceso a todas las notas y recordatorios listados arriba — nunc
 Cuando el usuario pide algo guardado, devolvé el valor EXACTAMENTE como fue guardado, sin resumir ni reescribir.
 Si fue guardado como imagen (clave "img_"), usá retrieve_image — no describas su contenido con texto.
 Cuando guardás texto de una imagen, transcribí EXACTAMENTE lo que dice, sin parafrasear.
+Antes de guardar una nota que sea claramente temporal (lista de compras, tarea puntual, recordar algo hasta cierta fecha), preguntá: "¿Hasta cuándo necesitás que recuerde esto?" Si el usuario da una fecha, guardá la nota con ese expires_at en ISO 8601. Las notas permanentes (DNI, contraseñas, datos personales) se guardan sin vencimiento.
 
 — ACCIONES DESTRUCTIVAS:
 Antes de eliminar cualquier cosa (nota, imagen o recordatorio), describí exactamente qué vas a borrar y pedí confirmación: "¿Confirmás que querés eliminar [descripción]? Respondé sí para confirmar." Solo ejecutá el borrado tras confirmación explícita.
@@ -225,7 +230,7 @@ async function executeTool(phone, name, input) {
       return { success: true }
     }
     case 'save_memory':
-      saveMemory(phone, input.key, input.value)
+      saveMemory(phone, input.key, input.value, input.expires_at ?? null)
       return { success: true }
     case 'get_memory': {
       const all = getAllMemories(phone)

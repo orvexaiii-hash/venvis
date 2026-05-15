@@ -72,7 +72,7 @@ export function deleteReminder(id, phone) {
   db.prepare('DELETE FROM reminders WHERE id = ? AND phone = ?').run(id, phone)
 }
 
-export function startReminderTick(onReminder, onDailySummary) {
+export function startReminderTick(onReminder, onDailySummary, onCleanupExpired) {
   let lastSummaryDate = ''
 
   function tick() {
@@ -86,6 +86,8 @@ export function startReminderTick(onReminder, onDailySummary) {
       lastSummaryDate = today
       onDailySummary()
     }
+
+    if (onCleanupExpired) onCleanupExpired()
 
     const due = getPendingReminders()
     for (const r of due) {
