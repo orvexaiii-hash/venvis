@@ -26,12 +26,7 @@ if errorlevel 1 (
 echo [3/3] Instalando resto de dependencias...
 pip install -r requirements.txt
 
-echo [4/4] Instalando Porcupine (wake word)...
-pip install pvporcupine
-
 echo.
 echo Instalacion completa.
-echo.
-echo SIGUIENTE PASO: configura tu PORCUPINE_KEY en el archivo .env
-echo Lee SETUP.md para las instrucciones.
+echo Ejecuta iniciar.bat para arrancar VENVIS.
 pause
