@@ -1,0 +1,38 @@
+name: Deploy Aria
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'aria/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy aria files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 31.97.21.155
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          source: "aria/"
+          target: "/etc/easypanel/projects/aria/aria/code/"
+
+      - name: Build and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 31.97.21.155
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /etc/easypanel/projects/aria/aria/code/aria
+            docker build --no-cache -t easypanel/aria/aria:latest .
+            docker service update --force --image easypanel/aria/aria:latest aria_aria
+            echo "✓ Aria deployed at $(date)"
