@@ -31,10 +31,11 @@ export async function POST(req: NextRequest) {
 
   const code = generateOTP()
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+  const createdAt = new Date().toISOString()
 
   db.prepare(
-    'INSERT INTO web_otps (phone, code, expires_at) VALUES (?, ?, ?)'
-  ).run(phone, code, expiresAt)
+    'INSERT INTO web_otps (phone, code, expires_at, created_at) VALUES (?, ?, ?, ?)'
+  ).run(phone, code, expiresAt, createdAt)
 
   return NextResponse.json({ ok: true })
 }
