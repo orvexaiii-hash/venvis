@@ -12,8 +12,11 @@ export async function middleware(req: NextRequest) {
   const token = req.cookies.get('aria_session')?.value
   if (!token) return NextResponse.redirect(new URL('/', req.url))
 
+  const jwtSecret = process.env.JWT_SECRET
+  if (!jwtSecret) return NextResponse.redirect(new URL('/', req.url))
+
   try {
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? '')
+    const secret = new TextEncoder().encode(jwtSecret)
     await jwtVerify(token, secret)
     return NextResponse.next()
   } catch {
