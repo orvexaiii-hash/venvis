@@ -72,7 +72,18 @@ export function deleteReminder(id, phone) {
   db.prepare('DELETE FROM reminders WHERE id = ? AND phone = ?').run(id, phone)
 }
 
-export function startReminderTick(onReminder, onDailySummary, onCleanupExpired) {
+export function getPendingWebOTPs() {
+  return db.prepare(
+    `SELECT id, phone, code FROM web_otps
+     WHERE sent = 0 AND used = 0 AND expires_at > datetime('now')`
+  ).all()
+}
+
+export function markOTPSent(id) {
+  db.prepare('UPDATE web_otps SET sent = 1 WHERE id = ?').run(id)
+}
+
+export function startReminderTick(onReminder, onDailySummary, onCleanupExpired, onSendOTPs) {
   let lastSummaryDate = ''
 
   function tick() {
@@ -88,6 +99,8 @@ export function startReminderTick(onReminder, onDailySummary, onCleanupExpired) 
     }
 
     if (onCleanupExpired) onCleanupExpired()
+
+    if (onSendOTPs) onSendOTPs()
 
     const due = getPendingReminders()
     for (const r of due) {

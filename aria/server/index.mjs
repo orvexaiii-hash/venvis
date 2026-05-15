@@ -1,6 +1,6 @@
 import 'node:process'
 import { startWhatsApp, sendMessage, stopWhatsApp } from './whatsapp.mjs'
-import { startReminderTick, getTodayReminders } from './reminders.mjs'
+import { startReminderTick, getTodayReminders, getPendingWebOTPs, markOTPSent } from './reminders.mjs'
 import { listUsers } from './users.mjs'
 import { deleteExpiredMemories } from './memory.mjs'
 
@@ -32,6 +32,18 @@ async function sendDailySummary() {
   }
 }
 
+async function sendPendingOTPs() {
+  const otps = getPendingWebOTPs()
+  for (const otp of otps) {
+    try {
+      await sendMessage(otp.phone, `Tu código de acceso a Aria: *${otp.code}*. Expira en 5 minutos.`)
+      markOTPSent(otp.id)
+    } catch (err) {
+      console.error(`[OTP] Error enviando a ${otp.phone}:`, err.message)
+    }
+  }
+}
+
 async function main() {
   await startWhatsApp()
 
@@ -44,7 +56,8 @@ async function main() {
       }
     },
     sendDailySummary,
-    deleteExpiredMemories
+    deleteExpiredMemories,
+    sendPendingOTPs
   )
 
   console.log('[Aria] Listo.')
