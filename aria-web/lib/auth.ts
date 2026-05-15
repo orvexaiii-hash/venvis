@@ -8,7 +8,7 @@ function getSecret() {
 }
 
 export function generateOTP(): string {
-  return String(randomInt(100000, 999999))
+  return String(randomInt(100000, 1000000))
 }
 
 export async function signJWT(payload: { phone: string }): Promise<string> {
