@@ -10,6 +10,8 @@ if (DB_PATH !== ':memory:') {
 
 export const db = new DatabaseSync(DB_PATH)
 
+db.exec('PRAGMA foreign_keys = ON')
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     phone TEXT PRIMARY KEY,
@@ -92,13 +94,14 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     routine_id INTEGER NOT NULL,
     exercise_id INTEGER NOT NULL,
-    day_of_week TEXT NOT NULL,
+    day_of_week TEXT NOT NULL CHECK(day_of_week IN ('MON','TUE','WED','THU','FRI','SAT','SUN')),
     order_index INTEGER NOT NULL,
     sets INTEGER NOT NULL,
     reps TEXT NOT NULL,
     rest_seconds INTEGER,
     FOREIGN KEY (routine_id) REFERENCES routines(id),
-    FOREIGN KEY (exercise_id) REFERENCES exercises(id)
+    FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+    UNIQUE(routine_id, day_of_week, order_index)
   );
 
   CREATE TABLE IF NOT EXISTS user_routines (
@@ -108,7 +111,8 @@ db.exec(`
     active INTEGER DEFAULT 1,
     assigned_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (phone) REFERENCES users(phone),
-    FOREIGN KEY (routine_id) REFERENCES routines(id)
+    FOREIGN KEY (routine_id) REFERENCES routines(id),
+    UNIQUE(phone, routine_id)
   );
 
   CREATE TABLE IF NOT EXISTS user_modules (
@@ -128,3 +132,4 @@ try { db.exec('ALTER TABLE users ADD COLUMN paid_until TEXT') } catch (_) {}
 try { db.exec('ALTER TABLE users ADD COLUMN display_name TEXT') } catch (_) {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_chat_phone ON chat_messages(phone, id)') } catch (_) {}
 try { db.exec('ALTER TABLE memories ADD COLUMN expires_at TEXT') } catch (_) {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_web_otps_phone ON web_otps(phone, used, expires_at)') } catch (_) {}
