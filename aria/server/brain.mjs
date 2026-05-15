@@ -1,9 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { saveMemory, getAllMemories } from './memory.mjs'
+import { saveMemory, getAllMemories, deleteMemory } from './memory.mjs'
 import { saveReminder, saveRecurringReminder, listReminders, deleteReminder, getReminderById, updateReminderGCalId } from './reminders.mjs'
 import { getUser, setUserName } from './users.mjs'
 import { db } from './db.mjs'
-import { getImage } from './image-store.mjs'
+import { getImage, deleteImage } from './image-store.mjs'
 import { isConfigured as gcalConfigured, isConnected as gcalConnected, getAuthUrl, createEvent as gcalCreate, deleteEvent as gcalDelete } from './gcal.mjs'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -96,7 +96,7 @@ const TOOLS = [
   },
   {
     name: 'delete_reminder',
-    description: 'Elimina un recordatorio por su ID numérico.',
+    description: 'Elimina un recordatorio. SOLO usá este tool DESPUÉS de que el usuario haya confirmado explícitamente con "sí" o "confirmar". Nunca lo llamés sin confirmación previa.',
     input_schema: {
       type: 'object',
       properties: {
@@ -136,6 +136,29 @@ const TOOLS = [
       },
       required: ['image_id']
     }
+  },
+  {
+    name: 'delete_memory',
+    description: 'Elimina una nota guardada del usuario. SOLO usá este tool DESPUÉS de que el usuario haya confirmado explícitamente con "sí" o "confirmar". Nunca lo llamés sin confirmación previa.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Key exacto de la nota a eliminar (como aparece en la lista de notas)' }
+      },
+      required: ['key']
+    }
+  },
+  {
+    name: 'delete_image',
+    description: 'Elimina una imagen guardada y su referencia en notas. SOLO usá este tool DESPUÉS de que el usuario haya confirmado explícitamente con "sí" o "confirmar". Nunca lo llamés sin confirmación previa.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: 'ID del archivo de imagen' },
+        memory_key: { type: 'string', description: 'Key de la nota que referencia la imagen (empieza con img_)' }
+      },
+      required: ['image_id', 'memory_key']
+    }
   }
 ]
 
@@ -169,7 +192,8 @@ REGLAS IMPORTANTES:
 2. Cuando el usuario pide algo guardado, devolvé el valor EXACTAMENTE como fue guardado, sin resumir ni reescribir.
 3. Si fue guardado como imagen (clave que empieza con "img_"), usá retrieve_image para enviársela — no describas su contenido con texto.
 4. Cuando guardás texto de una imagen, transcribí EXACTAMENTE lo que dice, sin parafrasear.
-5. Respondés en máximo 2-3 oraciones. Cuando usás herramientas, confirmás brevemente.`
+5. ANTES de eliminar cualquier cosa (nota, imagen o recordatorio), avisá exactamente qué vas a borrar y pedí confirmación: "¿Confirmás que querés eliminar [nombre/descripción]? Respondé sí para confirmar." Solo ejecutá el borrado si el usuario responde afirmativamente.
+6. Respondés en máximo 2-3 oraciones. Cuando usás herramientas, confirmás brevemente.`
 }
 
 // ── Tool execution ────────────────────────────────────────
@@ -221,6 +245,15 @@ async function executeTool(phone, name, input) {
       const img = getImage(phone, input.image_id)
       if (!img) return { error: 'Imagen no encontrada. Usá list_saved_images para ver las disponibles.' }
       return { success: true, __image: img }
+    }
+    case 'delete_memory': {
+      deleteMemory(phone, input.key)
+      return { success: true }
+    }
+    case 'delete_image': {
+      deleteImage(phone, input.image_id)
+      deleteMemory(phone, input.memory_key)
+      return { success: true }
     }
     default:
       return { error: 'unknown tool' }

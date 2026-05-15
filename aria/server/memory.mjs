@@ -21,3 +21,7 @@ export function getAllMemories(phone) {
     'SELECT key, value FROM memories WHERE phone = ? ORDER BY updated_at DESC'
   ).all(phone)
 }
+
+export function deleteMemory(phone, key) {
+  db.prepare('DELETE FROM memories WHERE phone = ? AND key = ?').run(phone, key)
+}

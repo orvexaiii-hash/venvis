@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 
@@ -11,6 +11,11 @@ export function saveImage(phone, buffer, mimetype) {
   const id = `${Date.now()}_${randomBytes(3).toString('hex')}.${ext}`
   writeFileSync(join(dir, id), buffer)
   return id
+}
+
+export function deleteImage(phone, id) {
+  const safeName = id.replace(/[^a-zA-Z0-9._-]/g, '')
+  try { unlinkSync(join(IMAGE_DIR, phone, safeName)) } catch (_) {}
 }
 
 export function getImage(phone, id) {
