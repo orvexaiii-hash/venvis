@@ -3,11 +3,13 @@ import { Boom } from '@hapi/boom'
 import { createServer } from 'http'
 import { rmSync } from 'fs'
 import { join } from 'path'
+import { randomInt } from 'node:crypto'
 import { chat } from './brain.mjs'
 import { getUser, activateUser, setUserName, createActivationCode, listUsers, deactivateUser, isAdmin, promoteToAdmin, activateUserDirect, isPaymentExpired } from './users.mjs'
 import { saveImage } from './image-store.mjs'
 import { handleCallback as gcalCallback, isConfigured as gcalConfigured } from './gcal.mjs'
 import { handleAdminRequest, broadcastNewUser } from './admin.mjs'
+import { db } from './db.mjs'
 
 const AUTH_DIR = process.env.AUTH_DIR || join(process.cwd(), 'data', 'auth')
 
@@ -179,6 +181,18 @@ async function handleMessage(phone, text, imageData, imageId, replyFn, sendImage
 
   if (!user.active) {
     return replyFn('Hola! 👋 Tu cuenta todavía está pendiente de activación por el administrador. Te avisamos cuando esté lista!')
+  }
+
+  const normalized = text?.trim().toLowerCase().replace(/[áàä]/g, 'a').replace(/[éèë]/g, 'e')
+  if (normalized === 'codigo' || normalized === 'código') {
+    const code = String(randomInt(100000, 1000000))
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    const createdAt = new Date().toISOString()
+    db.prepare('DELETE FROM web_otps WHERE phone = ? AND used = 0').run(phone)
+    db.prepare('INSERT INTO web_otps (phone, code, expires_at, sent, created_at) VALUES (?, ?, ?, 1, ?)').run(phone, code, expiresAt, createdAt)
+    const webUrl = process.env.ARIA_WEB_URL || ''
+    const link = webUrl ? `\n${webUrl}` : ''
+    return replyFn(`Tu código de acceso a la app: *${code}*\nExpira en 5 minutos.${link}`)
   }
 
   const { text: reply, imagesToSend } = await chat(phone, text, imageData, imageId)
