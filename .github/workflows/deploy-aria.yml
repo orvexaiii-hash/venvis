@@ -81,6 +81,6 @@ jobs:
                 --env JWT_SECRET=${JWT_SECRET} \
                 --env ARIA_WEB_URL=${ARIA_WEB_URL} \
                 --env NODE_ENV=production \
-                -p 3001:3001 \
+                -p 3002:3002 \
                 easypanel/aria/aria-web:latest
             echo "✓ Aria Web deployed at $(date)"
