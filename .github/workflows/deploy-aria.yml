@@ -62,6 +62,22 @@ jobs:
           source: "aria-web/"
           target: "/etc/easypanel/projects/aria/aria-web/code/"
 
+      - name: Inspect aria service mounts
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 31.97.21.155
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            echo "=== aria service mounts ==="
+            docker service inspect aria_aria --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' 2>/dev/null || echo "service not found"
+            echo "=== aria container mounts ==="
+            docker ps --filter name=aria_aria --format "{{.ID}}" | head -1 | xargs -I{} docker inspect {} --format '{{json .Mounts}}' 2>/dev/null || echo "container not found"
+            echo "=== find aria.db ==="
+            find /etc/easypanel/projects/aria -name "aria.db" 2>/dev/null || echo "not found in easypanel"
+            find /var/lib/docker/volumes -name "aria.db" 2>/dev/null | head -5 || echo "not found in volumes"
+
       - name: Build and deploy aria-web
         uses: appleboy/ssh-action@v1.0.3
         with:
