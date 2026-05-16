@@ -422,9 +422,16 @@ fetch('/admin/api/users').then(r => {
 <script>
   async function loadRutinas() {
     const res = await fetch('/admin/rutinas')
+    if (!res.ok) return
     const list = await res.json()
     const sel = document.getElementById('rutinaSelect')
-    sel.innerHTML = list.map(r => \`<option value="\${r.id}">\${r.name} (\${r.difficulty})</option>\`).join('')
+    sel.innerHTML = ''
+    for (const r of list) {
+      const opt = document.createElement('option')
+      opt.value = r.id
+      opt.textContent = \`\${r.name} (\${r.difficulty})\`
+      sel.appendChild(opt)
+    }
   }
 
   async function asignarRutina() {
