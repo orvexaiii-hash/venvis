@@ -72,10 +72,11 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
+            mkdir -p /etc/easypanel/projects/aria/aria/data
             cd /etc/easypanel/projects/aria/aria-web/code/aria-web
             docker build --no-cache -t easypanel/aria/aria-web:latest .
-            docker service update --force --image easypanel/aria/aria-web:latest aria_aria-web 2>/dev/null || \
-              docker service create --name aria_aria-web \
+            docker service rm aria_aria-web 2>/dev/null || true
+            docker service create --name aria_aria-web \
                 --mount type=bind,source=/etc/easypanel/projects/aria/aria/data,target=/app/data \
                 --env DB_PATH=/app/data/aria.db \
                 --env JWT_SECRET=${JWT_SECRET} \
