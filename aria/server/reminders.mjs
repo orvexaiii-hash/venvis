@@ -83,8 +83,24 @@ export function markOTPSent(id) {
   db.prepare('UPDATE web_otps SET sent = 1 WHERE id = ?').run(id)
 }
 
-export function startReminderTick(onReminder, onDailySummary, onCleanupExpired, onSendOTPs) {
+export function getWorkoutUsersForToday() {
+  const today = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    timeZone: 'America/Argentina/Buenos_Aires'
+  }).format(new Date()).toUpperCase()
+
+  return db.prepare(`
+    SELECT DISTINCT ur.phone, r.name as routine_name
+    FROM user_routines ur
+    JOIN routines r ON r.id = ur.routine_id
+    JOIN routine_exercises re ON re.routine_id = ur.routine_id
+    WHERE ur.active = 1 AND re.day_of_week = ?
+  `).all(today)
+}
+
+export function startReminderTick(onReminder, onDailySummary, onCleanupExpired, onSendOTPs, onWorkoutFollowUp) {
   let lastSummaryDate = ''
+  let lastFollowUpDate = ''
 
   function tick() {
     const TZ = 'America/Argentina/Buenos_Aires'
@@ -98,8 +114,12 @@ export function startReminderTick(onReminder, onDailySummary, onCleanupExpired, 
       onDailySummary()
     }
 
-    if (onCleanupExpired) onCleanupExpired()
+    if (hour === 21 && min === 0 && lastFollowUpDate !== today) {
+      lastFollowUpDate = today
+      if (onWorkoutFollowUp) onWorkoutFollowUp()
+    }
 
+    if (onCleanupExpired) onCleanupExpired()
     if (onSendOTPs) onSendOTPs()
 
     const due = getPendingReminders()

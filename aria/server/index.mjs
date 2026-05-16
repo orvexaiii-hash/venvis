@@ -1,6 +1,6 @@
 import 'node:process'
 import { startWhatsApp, sendMessage, stopWhatsApp } from './whatsapp.mjs'
-import { startReminderTick, getTodayReminders, getPendingWebOTPs, markOTPSent } from './reminders.mjs'
+import { startReminderTick, getTodayReminders, getPendingWebOTPs, markOTPSent, getWorkoutUsersForToday } from './reminders.mjs'
 import { listUsers } from './users.mjs'
 import { deleteExpiredMemories } from './memory.mjs'
 
@@ -44,6 +44,30 @@ async function sendPendingOTPs() {
   }
 }
 
+async function sendWorkoutReminders() {
+  const webUrl = process.env.ARIA_WEB_URL || ''
+  const users = getWorkoutUsersForToday()
+  for (const u of users) {
+    try {
+      const link = webUrl ? `\nAbrí la app para ver los ejercicios: ${webUrl}/rutina` : ''
+      await sendMessage(u.phone, `Hoy toca *${u.routine_name}* 💪${link}`)
+    } catch (err) {
+      console.error(`[Workout] Error enviando a ${u.phone}:`, err.message)
+    }
+  }
+}
+
+async function sendWorkoutFollowUp() {
+  const users = getWorkoutUsersForToday()
+  for (const u of users) {
+    try {
+      await sendMessage(u.phone, `¿Entrenaste hoy? Respondé *listo* cuando termines 🏋️`)
+    } catch (err) {
+      console.error(`[WorkoutFollowUp] Error enviando a ${u.phone}:`, err.message)
+    }
+  }
+}
+
 async function main() {
   await startWhatsApp()
 
@@ -55,9 +79,13 @@ async function main() {
         console.error(`[Reminder] Error enviando a ${reminder.phone}:`, err.message)
       }
     },
-    sendDailySummary,
+    async () => {
+      await sendDailySummary()
+      await sendWorkoutReminders()
+    },
     deleteExpiredMemories,
-    sendPendingOTPs
+    sendPendingOTPs,
+    sendWorkoutFollowUp
   )
 
   console.log('[Aria] Listo.')
