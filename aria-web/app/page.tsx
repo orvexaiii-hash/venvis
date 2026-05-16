@@ -14,30 +14,40 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError('')
-    const res = await fetch('/api/auth/request-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone })
-    })
-    const data = await res.json()
-    setLoading(false)
-    if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
-    setStep('code')
+    try {
+      const res = await fetch('/api/auth/request-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
+      setStep('code')
+    } catch {
+      setError('Error de conexión')
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function verifyOTP(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError('')
-    const res = await fetch('/api/auth/verify-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, code })
-    })
-    const data = await res.json()
-    setLoading(false)
-    if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
-    router.push('/dashboard')
+    try {
+      const res = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, code })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
+      router.push('/dashboard')
+    } catch {
+      setError('Error de conexión')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

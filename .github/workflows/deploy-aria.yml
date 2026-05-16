@@ -62,22 +62,6 @@ jobs:
           source: "aria-web/"
           target: "/etc/easypanel/projects/aria/aria-web/code/"
 
-      - name: Inspect aria service mounts
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 31.97.21.155
-          username: root
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
-          script: |
-            echo "=== aria service mounts ==="
-            docker service inspect aria_aria --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' 2>/dev/null || echo "service not found"
-            echo "=== aria container mounts ==="
-            docker ps --filter name=aria_aria --format "{{.ID}}" | head -1 | xargs -I{} docker inspect {} --format '{{json .Mounts}}' 2>/dev/null || echo "container not found"
-            echo "=== find aria.db ==="
-            find /etc/easypanel/projects/aria -name "aria.db" 2>/dev/null || echo "not found in easypanel"
-            find /var/lib/docker/volumes -name "aria.db" 2>/dev/null | head -5 || echo "not found in volumes"
-
       - name: Build and deploy aria-web
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -88,12 +72,11 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
-            mkdir -p /etc/easypanel/projects/aria/aria/data
             cd /etc/easypanel/projects/aria/aria-web/code/aria-web
             docker build --no-cache -t easypanel/aria/aria-web:latest .
             docker service rm aria_aria-web 2>/dev/null || true
             docker service create --name aria_aria-web \
-                --mount type=bind,source=/etc/easypanel/projects/aria/aria/data,target=/app/data \
+                --mount type=volume,source=aria_aria_aria-data,target=/app/data \
                 --env DB_PATH=/app/data/aria.db \
                 --env JWT_SECRET=${JWT_SECRET} \
                 --env ARIA_WEB_URL=${ARIA_WEB_URL} \
