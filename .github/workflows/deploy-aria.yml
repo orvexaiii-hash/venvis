@@ -62,6 +62,18 @@ jobs:
           source: "aria-web/"
           target: "/etc/easypanel/projects/aria/aria-web/code/"
 
+      - name: Check users in aria DB
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 31.97.21.155
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            docker run --rm \
+              --mount type=volume,source=aria_aria_aria-data,target=/data \
+              alpine sh -c "apk add --no-cache sqlite 2>/dev/null; sqlite3 /data/aria.db 'SELECT phone, name, active FROM users LIMIT 20;'"
+
       - name: Build and deploy aria-web
         uses: appleboy/ssh-action@v1.0.3
         with:
