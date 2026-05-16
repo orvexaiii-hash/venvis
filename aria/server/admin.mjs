@@ -1,4 +1,5 @@
 import { listUsers, deactivateUser, activateUserDirect, setPaidUntil, setDisplayName, deleteUser } from './users.mjs'
+import { db } from './db.mjs'
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'aria-admin-2026'
 
@@ -115,6 +116,34 @@ export async function handleAdminRequest(req, res) {
   if (url.startsWith('/admin/api/users/') && url.endsWith('/delete') && req.method === 'POST') {
     const phone = decodeURIComponent(url.replace('/admin/api/users/', '').replace('/delete', ''))
     deleteUser(phone)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
+
+  // API: list routines
+  if (url === '/admin/rutinas' && req.method === 'GET') {
+    const routines = db.prepare('SELECT id, name, difficulty FROM routines ORDER BY name').all()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(routines))
+    return
+  }
+
+  // API: assign routine to user
+  if (url === '/admin/rutina/asignar' && req.method === 'POST') {
+    const body = await parseBody(req)
+    const { phone, routineId } = body
+    if (!phone || !routineId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Faltan datos' }))
+      return
+    }
+    db.prepare('UPDATE user_routines SET active = 0 WHERE phone = ?').run(phone)
+    db.prepare('INSERT INTO user_routines (phone, routine_id, active) VALUES (?, ?, 1)').run(phone, routineId)
+    db.prepare(`
+      INSERT INTO user_modules (phone, module, active) VALUES (?, 'rutina', 1)
+      ON CONFLICT(phone, module) DO UPDATE SET active = 1
+    `).run(phone)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true }))
     return
@@ -278,7 +307,7 @@ function updateStats(list) {
 async function login() {
   const pwd = document.getElementById('pwd').value
   const r = await fetch('/admin/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:pwd})})
-  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; loadUsers(); startSSE() }
+  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; document.getElementById('app-rutinas').style.display='block'; loadUsers(); loadRutinas(); startSSE() }
   else document.getElementById('login-err').textContent = 'Contraseña incorrecta'
 }
 
@@ -366,7 +395,51 @@ function startSSE() {
 }
 
 fetch('/admin/api/users').then(r => {
-  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; r.json().then(u=>{users=dedup(u);render()}); startSSE() }
+  if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; document.getElementById('app-rutinas').style.display='block'; r.json().then(u=>{users=dedup(u);render()}); loadRutinas(); startSSE() }
 })
+</script>
+
+<div id="app-rutinas" style="display:none;padding:20px;padding-top:0">
+  <section style="margin-top:2rem">
+    <h2 style="font-size:16px;font-weight:700;margin-bottom:1rem">Asignar rutinas</h2>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+      <div>
+        <label style="display:block;font-size:.85rem;margin-bottom:.3rem;color:#aaa">Teléfono del usuario</label>
+        <input id="rutinaPhone" placeholder="549351XXXXXXX" style="padding:.5rem .75rem;border:1px solid #333;border-radius:.5rem;font-size:.9rem;background:#1a1a1a;color:#fff">
+      </div>
+      <div>
+        <label style="display:block;font-size:.85rem;margin-bottom:.3rem;color:#aaa">Rutina</label>
+        <select id="rutinaSelect" style="padding:.5rem .75rem;border:1px solid #333;border-radius:.5rem;font-size:.9rem;background:#1a1a1a;color:#fff">
+          <option value="">Cargando...</option>
+        </select>
+      </div>
+      <button onclick="asignarRutina()" style="padding:.5rem 1.25rem;background:#25d366;color:#000;border:none;border-radius:.5rem;cursor:pointer;font-size:.9rem;font-weight:700">Asignar</button>
+    </div>
+    <p id="rutinaMsg" style="margin-top:.75rem;font-size:.85rem;color:#666"></p>
+  </section>
+</div>
+
+<script>
+  async function loadRutinas() {
+    const res = await fetch('/admin/rutinas')
+    const list = await res.json()
+    const sel = document.getElementById('rutinaSelect')
+    sel.innerHTML = list.map(r => \`<option value="\${r.id}">\${r.name} (\${r.difficulty})</option>\`).join('')
+  }
+
+  async function asignarRutina() {
+    const phone = document.getElementById('rutinaPhone').value.trim()
+    const routineId = document.getElementById('rutinaSelect').value
+    const msg = document.getElementById('rutinaMsg')
+    if (!phone || !routineId) { msg.textContent = 'Completá todos los campos'; return }
+    const res = await fetch('/admin/rutina/asignar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, routineId: Number(routineId) })
+    })
+    const data = await res.json()
+    msg.textContent = data.ok ? '✓ Rutina asignada' : ('Error: ' + data.error)
+    msg.style.color = data.ok ? '#25d366' : '#ef4444'
+  }
 </script>
 </body></html>`
