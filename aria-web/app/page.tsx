@@ -21,7 +21,7 @@ export default function LoginPage() {
     })
     const data = await res.json()
     setLoading(false)
-    if (!res.ok) { setError(data.error); return }
+    if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
     setStep('code')
   }
 
@@ -36,7 +36,7 @@ export default function LoginPage() {
     })
     const data = await res.json()
     setLoading(false)
-    if (!res.ok) { setError(data.error); return }
+    if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
     router.push('/dashboard')
   }
 

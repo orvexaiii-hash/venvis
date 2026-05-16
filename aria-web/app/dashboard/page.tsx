@@ -13,7 +13,8 @@ export default async function DashboardPage() {
   if (!session) redirect('/')
 
   const db = getDb()
-  const user = db.prepare('SELECT name FROM users WHERE phone = ?').get(session.phone) as { name: string }
+  const user = db.prepare('SELECT name FROM users WHERE phone = ?').get(session.phone) as { name: string } | undefined
+  if (!user) redirect('/')
   const modules = db.prepare(
     'SELECT module FROM user_modules WHERE phone = ? AND active = 1'
   ).all(session.phone) as { module: string }[]
