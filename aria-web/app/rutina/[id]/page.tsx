@@ -36,6 +36,8 @@ export default async function ExercisePage({ params }: { params: Promise<{ id: s
      LIMIT 1`
   ).get(session.phone, exercise.id) as { sets: number; reps: string; rest_seconds: number | null } | undefined
 
+  if (!assigned) notFound()
+
   return (
     <>
       <Navbar name={user.name} />
