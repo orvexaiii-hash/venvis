@@ -13,9 +13,12 @@ export default async function ExercisePage({ params }: { params: Promise<{ id: s
   const user = db.prepare('SELECT name FROM users WHERE phone = ?').get(session.phone) as { name: string } | undefined
   if (!user) redirect('/')
 
+  const numId = Number(id)
+  if (!Number.isInteger(numId) || numId <= 0) notFound()
+
   const exercise = db.prepare(
     'SELECT id, name, muscle_group, description, image_url FROM exercises WHERE id = ?'
-  ).get(Number(id)) as {
+  ).get(numId) as {
     id: number
     name: string
     muscle_group: string
@@ -66,7 +69,7 @@ export default async function ExercisePage({ params }: { params: Promise<{ id: s
                 <p className="text-3xl font-bold text-green-700">{assigned.reps}</p>
                 <p className="text-xs text-green-600 mt-0.5">reps</p>
               </div>
-              {assigned.rest_seconds && (
+              {assigned.rest_seconds != null && (
                 <div>
                   <p className="text-3xl font-bold text-green-700">{assigned.rest_seconds}s</p>
                   <p className="text-xs text-green-600 mt-0.5">descanso</p>
