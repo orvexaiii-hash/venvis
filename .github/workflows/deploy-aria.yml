@@ -72,14 +72,16 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
+            SECRET_FILE="/etc/easypanel/projects/aria/jwt-secret"
+            [ -f "$SECRET_FILE" ] || openssl rand -hex 32 > "$SECRET_FILE"
+            JWT_SECRET_VAL=$(cat "$SECRET_FILE")
             cd /etc/easypanel/projects/aria/aria-web/code/aria-web
             docker build --no-cache -t easypanel/aria/aria-web:latest .
             docker service rm aria_aria-web 2>/dev/null || true
             docker service create --name aria_aria-web \
                 --mount type=volume,source=aria_aria_aria-data,target=/app/data \
                 --env DB_PATH=/app/data/aria.db \
-                --env JWT_SECRET=${JWT_SECRET} \
-                --env ARIA_WEB_URL=${ARIA_WEB_URL} \
+                --env "JWT_SECRET=$JWT_SECRET_VAL" \
                 --env NODE_ENV=production \
                 -p 3002:3002 \
                 easypanel/aria/aria-web:latest
