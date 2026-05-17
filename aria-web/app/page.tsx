@@ -4,7 +4,6 @@ import { useRouter } from 'next/navigation'
 
 export default function LoginPage() {
   const router = useRouter()
-  const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -17,7 +16,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, code })
+        body: JSON.stringify({ code })
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { setError(data?.error ?? 'Error inesperado'); return }
@@ -42,19 +41,6 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Número de WhatsApp
-            </label>
-            <input
-              type="tel"
-              value={phone}
-              onChange={e => setPhone(e.target.value.replace(/\D/g, ''))}
-              placeholder="549351XXXXXXX"
-              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Código de 6 dígitos
             </label>
             <input
@@ -64,6 +50,7 @@ export default function LoginPage() {
               onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
               placeholder="123456"
               maxLength={6}
+              autoFocus
               className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center text-2xl tracking-[0.5em] font-mono focus:outline-none focus:ring-2 focus:ring-green-400"
               required
             />
