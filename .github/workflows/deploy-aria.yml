@@ -72,6 +72,8 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
+            echo "=== aria bot DB path ==="
+            docker inspect $(docker ps -q --filter name=aria_aria) --format '{{json .Mounts}}' 2>/dev/null | python3 -c "import sys,json; [print(m['Source']) for m in json.load(sys.stdin) if m.get('Destination')=='/app/data']" 2>/dev/null || true
             SECRET_FILE="/etc/easypanel/projects/aria/jwt-secret"
             [ -f "$SECRET_FILE" ] || openssl rand -hex 32 > "$SECRET_FILE"
             JWT_SECRET_VAL=$(cat "$SECRET_FILE")
@@ -79,7 +81,7 @@ jobs:
             docker build --no-cache -t easypanel/aria/aria-web:latest .
             docker service rm aria_aria-web 2>/dev/null || true
             docker service create --name aria_aria-web \
-                --mount type=volume,source=aria_aria_aria-data,target=/app/data \
+                --mount type=bind,source=/etc/easypanel/projects/aria/aria/data,target=/app/data \
                 --env DB_PATH=/app/data/aria.db \
                 --env "JWT_SECRET=$JWT_SECRET_VAL" \
                 --env NODE_ENV=production \
