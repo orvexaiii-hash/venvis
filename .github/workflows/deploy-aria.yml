@@ -33,9 +33,26 @@ jobs:
           command_timeout: 10m
           script: |
             set -e
+            mkdir -p /etc/easypanel/projects/aria/aria/data
+
+            # Copiar datos existentes (DB + sesión WA) al path del bind mount antes de migrar
+            ARIA_CID=$(docker ps -q --filter label=com.docker.swarm.service.name=aria_aria 2>/dev/null | head -1)
+            if [ -n "$ARIA_CID" ]; then
+              docker cp "$ARIA_CID:/app/data/." /etc/easypanel/projects/aria/aria/data/ 2>/dev/null || true
+              echo "✓ Datos copiados al bind mount"
+            else
+              echo "(sin contenedor aria corriendo, omitiendo copia)"
+            fi
+
             cd /etc/easypanel/projects/aria/aria/code/aria
             docker build --no-cache -t easypanel/aria/aria:latest .
-            docker service update --force --image easypanel/aria/aria:latest aria_aria
+
+            # Migrar de volumen anónimo a bind mount (preserva env vars existentes del servicio)
+            docker service update --mount-rm /app/data aria_aria 2>/dev/null || true
+            docker service update --force \
+              --image easypanel/aria/aria:latest \
+              --mount-add type=bind,source=/etc/easypanel/projects/aria/aria/data,target=/app/data \
+              aria_aria
             echo "✓ Aria deployed at $(date)"
 
   deploy-aria-web:
@@ -72,28 +89,9 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
-            echo "=== aria bot containers ==="
-            docker ps --filter label=com.docker.swarm.service.name=aria_aria --format "{{.Names}} {{.Mounts}}" 2>/dev/null || true
-            echo "=== aria bot DB path (label filter) ==="
-            ARIA_CID=$(docker ps -q --filter label=com.docker.swarm.service.name=aria_aria 2>/dev/null | head -1)
-            if [ -n "$ARIA_CID" ]; then
-              docker inspect "$ARIA_CID" --format '{{json .Mounts}}' | python3 -c "import sys,json; [print(m['Source']) for m in json.load(sys.stdin) if m.get('Destination')=='/app/data']" 2>/dev/null || true
-            else
-              echo "(aria_aria container not found via label)"
-            fi
-            echo "=== all running containers ==="
-            docker ps --format "{{.Names}}" 2>/dev/null || true
-            echo "=== web_otps in bind-mount DB ==="
-            DB_FILE="/etc/easypanel/projects/aria/aria/data/aria.db"
-            if [ -f "$DB_FILE" ]; then
-              sqlite3 "$DB_FILE" "SELECT code, phone, used, expires_at FROM web_otps ORDER BY created_at DESC LIMIT 5;" 2>/dev/null || echo "(sqlite3 not available)"
-            else
-              echo "DB file not found at $DB_FILE"
-            fi
             SECRET_FILE="/etc/easypanel/projects/aria/jwt-secret"
             [ -f "$SECRET_FILE" ] || openssl rand -hex 32 > "$SECRET_FILE"
             JWT_SECRET_VAL=$(cat "$SECRET_FILE")
-            echo "JWT_SECRET length: ${#JWT_SECRET_VAL}"
             cd /etc/easypanel/projects/aria/aria-web/code/aria-web
             docker build --no-cache -t easypanel/aria/aria-web:latest .
             docker service rm aria_aria-web 2>/dev/null || true
