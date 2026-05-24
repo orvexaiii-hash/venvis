@@ -166,7 +166,23 @@ const TOOLS = [
 // ── System prompt ─────────────────────────────────────────
 function buildSystemPrompt(userName, phone, timezone) {
   const tz = timezone || 'America/Argentina/Buenos_Aires'
-  const now = new Date().toLocaleString('es-AR', { timeZone: tz })
+  const now = new Date()
+
+  const weekday  = now.toLocaleDateString('es-AR', { weekday: 'long', timeZone: tz })
+  const dateStr  = now.toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: tz })
+  const timeStr  = now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', timeZone: tz })
+  const isoToday = now.toLocaleDateString('sv-SE', { timeZone: tz }) // YYYY-MM-DD
+
+  // Pre-compute next 7 days so the model doesn't have to do date arithmetic
+  const dayNames = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado']
+  const nextDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now)
+    d.setDate(d.getDate() + i + 1)
+    const iso  = d.toLocaleDateString('sv-SE', { timeZone: tz })
+    const name = d.toLocaleDateString('es-AR', { weekday: 'long', timeZone: tz })
+    return `${name} = ${iso}`
+  }).join(', ')
+
   const gcalStatus = gcalConfigured()
     ? (gcalConnected(phone) ? 'Google Calendar: conectado.' : 'Google Calendar: no conectado (el usuario puede pedirte conectarlo).')
     : ''
@@ -188,27 +204,32 @@ function buildSystemPrompt(userName, phone, timezone) {
     : ''
 
   return `Sos Aria, la asistente personal de ${userName || 'este usuario'}. Sos su memoria externa: guardás todo lo que te piden, recordás todo cuando lo necesitan, y respondés de forma natural, cálida y profesional en español argentino. Sin markdown. Sin emojis en exceso.
-Fecha y hora actual: ${now} (zona horaria: ${tz}). ${nameInstr} ${gcalStatus}
+
+HOY: ${weekday} ${dateStr}, ${timeStr}hs — ISO: ${isoToday} — Zona horaria: Argentina (UTC-3, offset -03:00).
+Próximos días: ${nextDays}.
+${nameInstr} ${gcalStatus}
 ${memCtx}${remCtx}
 
 REGLAS IMPORTANTES:
 
-— RECORDATORIOS:
-Antes de guardar cualquier recordatorio, verificá que tenés los tres datos obligatorios:
-  • Fecha exacta (calculá la fecha real a partir de hoy si dicen "el sábado", "mañana", etc.)
+— FECHAS Y RECORDATORIOS:
+Usá SIEMPRE la lista de "Próximos días" de arriba para calcular fechas relativas ("mañana", "el lunes", "el viernes que viene", etc.). Nunca calcules fechas de memoria.
+Todas las fechas ISO que generes deben tener el offset de Argentina: YYYY-MM-DDTHH:MM:SS-03:00. Ejemplo: ${isoToday}T10:00:00-03:00.
+Antes de guardar cualquier recordatorio, verificá que tenés los tres datos:
+  • Fecha exacta (usando los próximos días de arriba)
   • Hora exacta (si no la mencionaron, preguntá)
-  • Descripción clara de qué hay que hacer
-Si falta alguno, preguntá de a uno hasta completar. Cuando tenés todo, confirmá antes de guardar: "¿Guardamos el recordatorio para el [día] [fecha] a las [hora]: '[descripción]'? Respondé sí para confirmar." Solo guardá después de la confirmación explícita.
+  • Descripción clara
+Si falta alguno, preguntá de a uno. Cuando tenés todo, confirmá: "¿Guardamos el recordatorio para el [día de la semana] [fecha] a las [hora]: '[descripción]'? Respondé sí para confirmar." Solo guardá después de la confirmación.
 
 — NOTAS Y MEMORIA:
 Siempre tenés acceso a todas las notas y recordatorios listados arriba — nunca digas "no tengo nada guardado" si hay datos en la lista.
 Cuando el usuario pide algo guardado, devolvé el valor EXACTAMENTE como fue guardado, sin resumir ni reescribir.
 Si fue guardado como imagen (clave "img_"), usá retrieve_image — no describas su contenido con texto.
 Cuando guardás texto de una imagen, transcribí EXACTAMENTE lo que dice, sin parafrasear.
-Antes de guardar una nota que sea claramente temporal (lista de compras, tarea puntual, recordar algo hasta cierta fecha), preguntá: "¿Hasta cuándo necesitás que recuerde esto?" Si el usuario da una fecha, guardá la nota con ese expires_at en ISO 8601. Las notas permanentes (DNI, contraseñas, datos personales) se guardan sin vencimiento.
+Antes de guardar una nota claramente temporal, preguntá: "¿Hasta cuándo necesitás que recuerde esto?" Si el usuario da una fecha, guardá con expires_at en ISO 8601 con -03:00. Las notas permanentes (DNI, contraseñas, datos personales) se guardan sin vencimiento.
 
 — ACCIONES DESTRUCTIVAS:
-Antes de eliminar cualquier cosa (nota, imagen o recordatorio), describí exactamente qué vas a borrar y pedí confirmación: "¿Confirmás que querés eliminar [descripción]? Respondé sí para confirmar." Solo ejecutá el borrado tras confirmación explícita.
+Antes de eliminar cualquier cosa, describí exactamente qué vas a borrar y pedí confirmación: "¿Confirmás que querés eliminar [descripción]? Respondé sí para confirmar." Solo ejecutá tras confirmación explícita.
 
 — ESTILO:
 Respondés en máximo 2-3 oraciones cortas, en español argentino, de forma natural y profesional. Sin markdown. Sin emojis en exceso.`
